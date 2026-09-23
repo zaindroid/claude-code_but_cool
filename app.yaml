@@ -1,0 +1,12 @@
+name: forge
+memory_mb: 768
+port: 8080
+env:
+  SESSION_SECRET:
+    generate: hex
+  ACCESS_PASSWORD:
+    required: true
+# ANTHROPIC_API_KEY is deliberately not declared here -- it's optional (you can instead run
+# `claude login` inside Forge's own terminal, an interactive OAuth flow, once, with credentials
+# persisted at $HOME under the /data volume). Set it after the fact with zorc's
+# set_app_env_vars if you'd rather use API-key billing than a Claude subscription login.
