@@ -61,8 +61,9 @@ export function bootstrapAdmin() {
   if (!isFirstBoot()) return;
   const password = process.env.ADMIN_PASSWORD;
   if (!password) throw new Error('ADMIN_PASSWORD is not set, and there is no admin account yet -- cannot start with nobody able to sign in');
-  createUser({ username: 'admin', password, role: 'admin' });
-  console.log('Created the first account: admin');
+  const username = process.env.ADMIN_USERNAME || 'admin';
+  createUser({ username, password, role: 'admin' });
+  console.log(`Created the first account: ${username}`);
 }
 
 export function login(req, res) {
