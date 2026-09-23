@@ -17,8 +17,8 @@ function resolveWithin(root, relPath) {
   return full;
 }
 
-export function listDir(project, relPath) {
-  const root = projectPath(project);
+export function listDir(user, project, relPath) {
+  const root = projectPath(user, project);
   if (!root) return null;
   const full = resolveWithin(root, relPath);
   if (!full || !fs.existsSync(full) || !fs.statSync(full).isDirectory()) return null;
@@ -33,8 +33,8 @@ export function listDir(project, relPath) {
     .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
 }
 
-export function readFile(project, relPath) {
-  const root = projectPath(project);
+export function readFile(user, project, relPath) {
+  const root = projectPath(user, project);
   if (!root) return null;
   const full = resolveWithin(root, relPath);
   if (!full || !fs.existsSync(full) || !fs.statSync(full).isFile()) return null;

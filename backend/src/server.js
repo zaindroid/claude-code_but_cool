@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 
-import { login, logout, authStatus, requireAuth, sessionFromCookieHeader } from './auth.js';
+import { login, logout, authStatus, requireAuth, requireAdmin, bootstrapAdmin, userFromCookieHeader } from './auth.js';
+import { listUsers, createUser, findById } from './users.js';
 import { listProjects, createProject } from './projects.js';
 import { listDir, readFile } from './files.js';
 import { attachTerminal } from './pty.js';
@@ -16,16 +17,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = Number(process.env.PORT) || 8080;
 
-for (const required of ['SESSION_SECRET', 'ACCESS_PASSWORD']) {
-  if (!process.env[required]) {
-    console.error(`Refusing to start: ${required} is not set`);
-    process.exit(1);
-  }
+if (!process.env.SESSION_SECRET) {
+  console.error('Refusing to start: SESSION_SECRET is not set');
+  process.exit(1);
 }
-
-// $HOME (see Dockerfile) is where `claude login` keeps its credentials and where any shell tool
-// writes its own config -- it has to exist before a PTY tries to start a shell in it.
-if (process.env.HOME) fs.mkdirSync(process.env.HOME, { recursive: true });
+try {
+  bootstrapAdmin();
+} catch (err) {
+  console.error(`Refusing to start: ${err.message}`);
+  process.exit(1);
+}
 
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
@@ -55,7 +56,7 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 app.get('/ready', (req, res) => (ready ? res.json({ status: 'ready' }) : res.status(503).json({ status: 'starting' })));
 app.get('/version', (req, res) => res.json({ sha: process.env.APP_SHA || 'unknown', built: process.env.APP_BUILT || 'unknown' }));
 app.get('/openapi.json', (req, res) =>
-  res.json({ openapi: '3.0.0', info: { title: 'Forge', version: '0.1.0' }, paths: { '/api/projects': {}, '/api/files': {}, '/api/file': {} } })
+  res.json({ openapi: '3.0.0', info: { title: 'Forge', version: '0.1.0' }, paths: { '/api/projects': {}, '/api/files': {}, '/api/file': {}, '/api/admin/users': {} } })
 );
 
 app.post('/api/login', login);
@@ -64,34 +65,46 @@ app.get('/api/auth/status', authStatus);
 
 app.use('/api', requireAuth);
 
-app.get('/api/projects', (req, res) => res.json({ projects: listProjects() }));
+app.get('/api/projects', (req, res) => res.json({ projects: listProjects(req.user) }));
 app.post('/api/projects', (req, res) => {
   try {
-    res.json(createProject(String(req.body?.name || '').trim()));
+    res.json(createProject(req.user, String(req.body?.name || '').trim()));
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }
 });
 app.get('/api/files', (req, res) => {
-  const entries = listDir(String(req.query.project || ''), String(req.query.path || '.'));
+  const entries = listDir(req.user, String(req.query.project || ''), String(req.query.path || '.'));
   if (!entries) return res.status(404).json({ error: 'Not found' });
   res.json({ entries });
 });
 app.get('/api/file', (req, res) => {
-  const file = readFile(String(req.query.project || ''), String(req.query.path || ''));
+  const file = readFile(req.user, String(req.query.project || ''), String(req.query.path || ''));
   if (!file) return res.status(404).json({ error: 'Not found' });
   res.json(file);
 });
 
-app.get('/api/settings', (req, res) => res.json({ settings: readSettingsForClient(), presets: PRESETS }));
+app.get('/api/settings', (req, res) => res.json({ settings: readSettingsForClient(req.user), presets: PRESETS }));
 app.put('/api/settings', (req, res) => {
   try {
-    res.json({ settings: writeSettings(req.body || {}) });
+    res.json({ settings: writeSettings(req.user, req.body || {}) });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
-app.delete('/api/settings/token', (req, res) => res.json({ settings: clearAuthToken() }));
+app.delete('/api/settings/token', (req, res) => res.json({ settings: clearAuthToken(req.user) }));
+
+// Admin-only: the only way any account other than the bootstrap admin ever gets created --
+// invite-only by design, see auth.js's own comment on bootstrapAdmin.
+app.get('/api/admin/users', requireAdmin, (req, res) => res.json({ users: listUsers() }));
+app.post('/api/admin/users', requireAdmin, (req, res) => {
+  try {
+    const user = createUser({ username: String(req.body?.username || '').trim(), password: String(req.body?.password || ''), role: req.body?.role === 'admin' ? 'admin' : 'user' });
+    res.json({ id: user.id, username: user.username, role: user.role, createdAt: user.createdAt });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
 
 // A dev server the person starts inside their project's terminal (npm run dev, etc) shows up
 // here once they tell Forge which port it's on -- kept as a plain per-request header rather than
@@ -122,15 +135,15 @@ const server = app.listen(PORT, () => {
 const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   if (!req.url.startsWith('/ws/terminal')) return socket.destroy();
-  const session = sessionFromCookieHeader(req.headers.cookie);
-  if (!session) {
+  const user = userFromCookieHeader(req.headers.cookie);
+  if (!user) {
     socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
     socket.destroy();
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
     const url = new URL(req.url, 'http://localhost');
-    attachTerminal(ws, {
+    attachTerminal(ws, user, {
       project: url.searchParams.get('project'),
       sessionId: url.searchParams.get('sessionId'),
       cols: Number(url.searchParams.get('cols')) || 80,

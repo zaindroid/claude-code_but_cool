@@ -1,7 +1,10 @@
-// Single-user, password-gated access. Forge gives whoever is signed in a real terminal that can
-// run `claude` -- that is shell access, so there is no "guest" mode and no account system: one
-// password, one signed session cookie, checked on every request and every WebSocket upgrade.
+// Real accounts now, not one shared password -- each session is tied to one Forge user (and, one
+// level down, one real Linux system user -- see users.js/osUsers.js). Invite-only: the very first
+// account (an "admin") is created automatically at first boot from ADMIN_PASSWORD, and only an
+// admin can create further accounts afterward (server.js's /api/admin/users) -- nobody
+// self-registers.
 import crypto from 'node:crypto';
+import { verifyLogin, findById, createUser, isFirstBoot } from './users.js';
 
 const COOKIE_NAME = 'forge_session';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days -- a personal tool, not re-logging in weekly
@@ -45,19 +48,29 @@ function parseCookies(header) {
   return out;
 }
 
-export function login(req, res) {
-  const password = process.env.ACCESS_PASSWORD;
-  if (!password) return res.status(500).json({ error: 'ACCESS_PASSWORD is not set on the server' });
-  const given = String(req.body?.password || '');
-  const a = Buffer.from(given.padEnd(password.length, '\0'));
-  const b = Buffer.from(password);
-  const match = given.length === password.length && crypto.timingSafeEqual(a, b);
-  if (!match) return res.status(401).json({ error: 'Wrong password' });
-
-  const token = sign({ exp: Date.now() + SESSION_TTL_MS });
+function setSessionCookie(req, res, userId) {
+  const token = sign({ userId, exp: Date.now() + SESSION_TTL_MS });
   const secureFlag = req.secure || req.get('x-forwarded-proto') === 'https' ? '; Secure' : '';
   res.setHeader('Set-Cookie', `${COOKIE_NAME}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secureFlag}`);
-  res.json({ ok: true });
+}
+
+// Runs once, the first time Forge ever starts with no accounts at all -- turns ADMIN_PASSWORD
+// into the first real account so there is always exactly one way in on a fresh deploy, with
+// nothing left in an ambiguous "nobody can sign in yet" state.
+export function bootstrapAdmin() {
+  if (!isFirstBoot()) return;
+  const password = process.env.ADMIN_PASSWORD;
+  if (!password) throw new Error('ADMIN_PASSWORD is not set, and there is no admin account yet -- cannot start with nobody able to sign in');
+  createUser({ username: 'admin', password, role: 'admin' });
+  console.log('Created the first account: admin');
+}
+
+export function login(req, res) {
+  const { username, password } = req.body || {};
+  const user = verifyLogin(String(username || ''), String(password || ''));
+  if (!user) return res.status(401).json({ error: 'Wrong username or password' });
+  setSessionCookie(req, res, user.id);
+  res.json({ ok: true, username: user.username, role: user.role });
 }
 
 export function logout(req, res) {
@@ -65,19 +78,28 @@ export function logout(req, res) {
   res.json({ ok: true });
 }
 
-export function sessionFromCookieHeader(cookieHeader) {
-  const cookies = parseCookies(cookieHeader);
-  return verify(cookies[COOKIE_NAME]);
+// Exported (not just used internally) because the WebSocket upgrade handler in server.js needs
+// this exact same check outside Express's own request/response cycle, where requireAuth's
+// middleware form doesn't apply.
+export function userFromCookieHeader(cookieHeader) {
+  const session = verify(parseCookies(cookieHeader)[COOKIE_NAME]);
+  if (!session) return null;
+  return findById(session.userId);
 }
 
 export function requireAuth(req, res, next) {
-  const session = sessionFromCookieHeader(req.headers.cookie);
-  if (!session) return res.status(401).json({ error: 'Sign in first' });
-  req.session = session;
+  const user = userFromCookieHeader(req.headers.cookie);
+  if (!user) return res.status(401).json({ error: 'Sign in first' });
+  req.user = user;
+  next();
+}
+
+export function requireAdmin(req, res, next) {
+  if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
   next();
 }
 
 export function authStatus(req, res) {
-  const session = sessionFromCookieHeader(req.headers.cookie);
-  res.json({ authenticated: !!session });
+  const user = userFromCookieHeader(req.headers.cookie);
+  res.json(user ? { authenticated: true, username: user.username, role: user.role } : { authenticated: false });
 }

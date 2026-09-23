@@ -4,9 +4,12 @@ port: 8080
 env:
   SESSION_SECRET:
     generate: hex
-  ACCESS_PASSWORD:
+  # The very first account (username "admin") is created automatically from this at first boot --
+  # see backend/src/auth.js's bootstrapAdmin. Every other account is invite-only, created by that
+  # admin afterward (POST /api/admin/users) -- nobody can self-register.
+  ADMIN_PASSWORD:
     required: true
-# ANTHROPIC_API_KEY is deliberately not declared here -- it's optional (you can instead run
-# `claude login` inside Forge's own terminal, an interactive OAuth flow, once, with credentials
-# persisted at $HOME under the /data volume). Set it after the fact with zorc's
-# set_app_env_vars if you'd rather use API-key billing than a Claude subscription login.
+# ANTHROPIC_API_KEY is not a top-level env var here -- each account sets its own provider (API key,
+# or a whole other Anthropic-API-compatible endpoint like DeepSeek/Kimi) from Forge's own Settings
+# page, stored per-account, encrypted -- see backend/src/settings.js. There is deliberately no
+# server-wide key shared across accounts.

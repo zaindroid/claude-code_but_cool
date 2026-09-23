@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { login } from '../api.js';
 
 export default function Login({ onSignedIn }) {
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -11,7 +12,7 @@ export default function Login({ onSignedIn }) {
     setBusy(true);
     setError('');
     try {
-      await login(password);
+      await login(username, password);
       onSignedIn();
     } catch (err) {
       setError(err.message || 'Something went wrong');
@@ -32,18 +33,28 @@ export default function Login({ onSignedIn }) {
         <p className="login-sub">A terminal for Claude Code, on your own server.</p>
         <form onSubmit={submit}>
           <input
-            type="password"
+            type="text"
             autoFocus
+            placeholder="Username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            disabled={busy}
+            autoComplete="username"
+          />
+          <input
+            type="password"
             placeholder="Password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             disabled={busy}
+            autoComplete="current-password"
           />
           {error && <div className="login-error">{error}</div>}
-          <button type="submit" disabled={busy || !password}>
+          <button type="submit" disabled={busy || !username || !password}>
             {busy ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
+        <p className="login-foot">Invite-only -- ask whoever administers this server for an account.</p>
       </div>
     </div>
   );

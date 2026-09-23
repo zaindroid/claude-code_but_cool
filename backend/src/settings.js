@@ -1,22 +1,27 @@
-// Which model provider `claude` talks to -- stored once, applied to every project's terminal.
-// Anthropic itself needs nothing here (an interactive `claude login` in the terminal is enough,
-// see pty.js/README); an API key or a whole other Anthropic-API-compatible provider (DeepSeek,
-// Kimi/Moonshot, anything documented the same way) goes through ANTHROPIC_BASE_URL/AUTH_TOKEN,
-// exactly the env vars the real `claude` CLI itself reads -- Forge does not reimplement any of
-// that, it just sets the same environment a person would export by hand before running `claude`.
+// Which model provider `claude` talks to -- one config per Forge account, stored under that
+// user's own home directory (so the same OS-level permissions that isolate their projects isolate
+// their API key too) and applied to every one of their terminals. Anthropic itself needs nothing
+// here (an interactive `claude login` in the terminal is enough, see pty.js/README); an API key or
+// a whole other Anthropic-API-compatible provider (DeepSeek, Kimi/Moonshot, anything documented
+// the same way) goes through ANTHROPIC_BASE_URL/AUTH_TOKEN, exactly the env vars the real `claude`
+// CLI itself reads -- Forge does not reimplement any of that, it just sets the same environment a
+// person would export by hand before running `claude`.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-
-const DATA_DIR = process.env.DATA_DIR || path.resolve(process.cwd(), 'data');
-const FILE = path.join(DATA_DIR, 'settings.json.enc');
+import { chownToUser } from './osUsers.js';
 
 const FIELDS = ['provider', 'baseUrl', 'authToken', 'model', 'smallModel'];
 const DEFAULTS = { provider: 'anthropic', baseUrl: '', authToken: '', model: '', smallModel: '' };
 
+function fileFor(user) {
+  return path.join(user.homeDir, '.forge-settings.json.enc');
+}
+
 // authToken is a real credential (an Anthropic API key or another provider's), so it is kept
-// encrypted at rest -- the same reason MailZ encrypts mail account credentials, not because this
-// needs to defend against much more than "don't leave API keys sitting in a plain JSON file".
+// encrypted at rest, on top of the OS-level file permission that already keeps other users out --
+// two independent reasons a copy of the raw volume/backup still does not hand out the key in
+// plain text.
 function key() {
   const secret = process.env.SESSION_SECRET;
   if (!secret) throw new Error('SESSION_SECRET is not set');
@@ -40,10 +45,11 @@ function decrypt(blob) {
   return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
 }
 
-export function readSettings() {
-  if (!fs.existsSync(FILE)) return { ...DEFAULTS };
+export function readSettings(user) {
+  const file = fileFor(user);
+  if (!fs.existsSync(file)) return { ...DEFAULTS };
   try {
-    return { ...DEFAULTS, ...JSON.parse(decrypt(fs.readFileSync(FILE, 'utf8'))) };
+    return { ...DEFAULTS, ...JSON.parse(decrypt(fs.readFileSync(file, 'utf8'))) };
   } catch {
     return { ...DEFAULTS };
   }
@@ -52,13 +58,13 @@ export function readSettings() {
 // What the settings page itself gets back -- authToken is never sent to the browser once saved,
 // only whether one is set, the same "already have a value, type a new one to replace it" pattern
 // as any password field. Every other field is plain, non-secret configuration.
-export function readSettingsForClient() {
-  const s = readSettings();
+export function readSettingsForClient(user) {
+  const s = readSettings(user);
   return { provider: s.provider, baseUrl: s.baseUrl, model: s.model, smallModel: s.smallModel, hasAuthToken: !!s.authToken };
 }
 
-export function writeSettings(patch) {
-  const current = readSettings();
+export function writeSettings(user, patch) {
+  const current = readSettings(user);
   const next = { ...current };
   for (const field of FIELDS) {
     if (field === 'authToken') {
@@ -70,24 +76,26 @@ export function writeSettings(patch) {
       next[field] = patch[field];
     }
   }
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(FILE, encrypt(JSON.stringify(next)), 'utf8');
-  return readSettingsForClient();
+  const file = fileFor(user);
+  fs.writeFileSync(file, encrypt(JSON.stringify(next)), 'utf8');
+  chownToUser(file, user.uid, user.gid);
+  return readSettingsForClient(user);
 }
 
-export function clearAuthToken() {
-  const current = readSettings();
+export function clearAuthToken(user) {
+  const current = readSettings(user);
   current.authToken = '';
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(FILE, encrypt(JSON.stringify(current)), 'utf8');
-  return readSettingsForClient();
+  const file = fileFor(user);
+  fs.writeFileSync(file, encrypt(JSON.stringify(current)), 'utf8');
+  chownToUser(file, user.uid, user.gid);
+  return readSettingsForClient(user);
 }
 
 // Exactly the environment `claude` itself reads (see the DeepSeek/Kimi-style integration docs) --
 // Forge sets these before spawning the shell so running `claude` in any project's terminal picks
 // the configured provider up automatically, with nothing to export by hand each time.
-export function providerEnv() {
-  const s = readSettings();
+export function providerEnv(user) {
+  const s = readSettings(user);
   const env = {};
   if (s.provider === 'anthropic') {
     if (s.authToken) env.ANTHROPIC_API_KEY = s.authToken;

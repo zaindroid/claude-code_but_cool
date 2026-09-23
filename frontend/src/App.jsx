@@ -5,6 +5,7 @@ import TerminalView from './components/TerminalView.jsx';
 import FileBrowser from './components/FileBrowser.jsx';
 import Preview from './components/Preview.jsx';
 import Settings from './components/Settings.jsx';
+import Admin from './components/Admin.jsx';
 import { authStatus, logout, listProjects, createProject } from './api.js';
 
 const TABS = [
@@ -15,6 +16,7 @@ const TABS = [
 
 export default function App() {
   const [authed, setAuthed] = useState(null);
+  const [role, setRole] = useState(null);
   const [projects, setProjects] = useState([]);
   const [activeProject, setActiveProject] = useState(null);
   // Every project whose terminal has been opened at least once stays mounted (in the background,
@@ -25,6 +27,7 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem('forge-theme') || 'dark');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -45,6 +48,7 @@ export default function App() {
     authStatus()
       .then(async (s) => {
         setAuthed(s.authenticated);
+        setRole(s.role || null);
         if (s.authenticated) {
           const list = await refreshProjects();
           if (list.length) selectProject(list[0].name);
@@ -78,7 +82,9 @@ export default function App() {
     return (
       <Login
         onSignedIn={async () => {
+          const s = await authStatus();
           setAuthed(true);
+          setRole(s.role || null);
           const list = await refreshProjects();
           if (list.length) selectProject(list[0].name);
         }}
@@ -111,6 +117,13 @@ export default function App() {
                 </nav>
               </div>
               <div className="main-head-right">
+                {role === 'admin' && (
+                  <button type="button" className="icon-btn" onClick={() => setAdminOpen(true)} title="Accounts" aria-label="Accounts">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </button>
+                )}
                 <button type="button" className="icon-btn" onClick={() => setSettingsOpen(true)} title="Provider settings" aria-label="Provider settings">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <circle cx="12" cy="12" r="3" />
@@ -146,11 +159,15 @@ export default function App() {
           <div className="empty-state fade-in">
             <p>Create a project to get a real terminal, running on your own server.</p>
             <button type="button" className="empty-settings-link" onClick={() => setSettingsOpen(true)}>Set up a provider first</button>
+            {role === 'admin' && (
+              <button type="button" className="empty-settings-link" onClick={() => setAdminOpen(true)}>Invite someone</button>
+            )}
           </div>
         )}
       </main>
 
       {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+      {adminOpen && <Admin onClose={() => setAdminOpen(false)} />}
     </div>
   );
 }

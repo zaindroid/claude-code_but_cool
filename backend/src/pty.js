@@ -1,11 +1,14 @@
 // One real PTY per open terminal tab, running an ordinary login shell in the project's own
-// directory -- Claude Code is not auto-launched; you type `claude` yourself, exactly like using
-// it locally, which is the whole point (no flag-wiring to keep in sync with the real CLI).
+// directory, as that Forge account's own Linux user (uid/gid -- see osUsers.js) -- this is the
+// actual isolation boundary between users, enforced by the kernel, not by this file remembering
+// to check who is allowed to see what. Claude Code is not auto-launched; you type `claude`
+// yourself, exactly like using it locally, which is the whole point (no flag-wiring to keep in
+// sync with the real CLI).
 import pty from 'node-pty';
 import { projectPath } from './projects.js';
 import { providerEnv } from './settings.js';
 
-const SHELL = process.env.SHELL || (process.platform === 'win32' ? 'powershell.exe' : 'bash');
+const SHELL = process.env.SHELL || 'bash';
 
 // Kept only so a reconnect (a flaky connection, a phone locking) can be told apart from someone
 // deliberately closing the tab -- not currently used to resume a session across reconnects (a
@@ -14,14 +17,14 @@ const SHELL = process.env.SHELL || (process.platform === 'win32' ? 'powershell.e
 const sessions = new Map(); // sessionId -> { term, timeout }
 const RECONNECT_GRACE_MS = 60_000;
 
-export function attachTerminal(ws, { project, sessionId, cols, rows }) {
-  const cwd = projectPath(project);
+export function attachTerminal(ws, user, { project, sessionId, cols, rows }) {
+  const cwd = projectPath(user, project);
   if (!cwd) {
     ws.close(4004, 'Unknown project');
     return;
   }
 
-  let entry = sessionId && sessions.get(sessionId);
+  let entry = sessionId && sessions.get(`${user.id}:${sessionId}`);
   if (entry) {
     clearTimeout(entry.timeout);
   } else {
@@ -33,10 +36,12 @@ export function attachTerminal(ws, { project, sessionId, cols, rows }) {
       cols: cols || 80,
       rows: rows || 24,
       cwd,
-      env: { ...process.env, TERM: 'xterm-256color', ...providerEnv() },
+      uid: user.uid,
+      gid: user.gid,
+      env: { HOME: user.homeDir, USER: user.linuxUsername, PATH: process.env.PATH, TERM: 'xterm-256color', ...providerEnv(user) },
     });
     entry = { term, timeout: null };
-    if (sessionId) sessions.set(sessionId, entry);
+    if (sessionId) sessions.set(`${user.id}:${sessionId}`, entry);
   }
 
   const { term } = entry;
@@ -45,7 +50,7 @@ export function attachTerminal(ws, { project, sessionId, cols, rows }) {
   });
   const onExit = term.onExit(({ exitCode }) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'exit', exitCode }));
-    if (sessionId) sessions.delete(sessionId);
+    if (sessionId) sessions.delete(`${user.id}:${sessionId}`);
   });
 
   ws.on('message', (raw) => {
@@ -62,13 +67,14 @@ export function attachTerminal(ws, { project, sessionId, cols, rows }) {
   ws.on('close', () => {
     onData.dispose();
     onExit.dispose();
-    if (sessionId && sessions.has(sessionId)) {
+    const key = `${user.id}:${sessionId}`;
+    if (sessionId && sessions.has(key)) {
       // Give a dropped connection a minute to reconnect (see attachTerminal's own reconnect
       // path above) before actually killing the shell underneath it.
       entry.timeout = setTimeout(() => {
-        if (sessions.get(sessionId) === entry) {
+        if (sessions.get(key) === entry) {
           term.kill();
-          sessions.delete(sessionId);
+          sessions.delete(key);
         }
       }, RECONNECT_GRACE_MS);
     } else {
