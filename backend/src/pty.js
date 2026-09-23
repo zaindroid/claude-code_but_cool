@@ -15,7 +15,11 @@ import pty from 'node-pty';
 import { projectPath } from './projects.js';
 import { providerEnv } from './settings.js';
 
-const SHELL = process.env.SHELL || 'bash';
+// A full path, not a bare command name: `su -s` doesn't do a $PATH lookup the way exec-by-name
+// normally does, and $SHELL isn't set in this container to begin with -- live-caught 2026-09-23
+// ("su: failed to execute bash: No such file or directory") the first time a terminal was opened
+// through the real UI after the switch to su-based spawning.
+const SHELL = process.env.SHELL || '/bin/bash';
 
 // Kept only so a reconnect (a flaky connection, a phone locking) can be told apart from someone
 // deliberately closing the tab -- not currently used to resume a session across reconnects (a
