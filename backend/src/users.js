@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createOsUser, ensureOsUserExists } from './osUsers.js';
+import { duBytes, DEFAULT_USER_QUOTA_BYTES } from './diskUsage.js';
 
 const DATA_DIR = process.env.DATA_DIR || path.resolve(process.cwd(), 'data');
 const USERS_DIR = path.join(DATA_DIR, 'users-meta');
@@ -38,15 +39,27 @@ function save(user) {
   return user;
 }
 
-export function listUsers() {
+// includeUsage does a real `du` per account -- fine for an admin panel opened occasionally, not
+// something to call on every request.
+export function listUsers({ includeUsage = false } = {}) {
   return fs
     .readdirSync(USERS_DIR)
     .filter((f) => f.endsWith('.json'))
     .map((f) => {
-      const { id, username, role, createdAt } = JSON.parse(fs.readFileSync(path.join(USERS_DIR, f), 'utf8'));
-      return { id, username, role, createdAt };
+      const user = JSON.parse(fs.readFileSync(path.join(USERS_DIR, f), 'utf8'));
+      const { id, username, role, createdAt, quotaBytes, homeDir } = user;
+      const base = { id, username, role, createdAt, quotaBytes: quotaBytes ?? DEFAULT_USER_QUOTA_BYTES };
+      return includeUsage ? { ...base, usedBytes: duBytes(homeDir) } : base;
     })
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+// Accounts created before quotaBytes existed don't have it in their saved JSON -- backfilled here
+// on read, not migrated on disk, so every caller (the quota check included) always sees a real
+// number without needing its own "or default" fallback scattered around.
+function withDefaults(user) {
+  if (!user) return user;
+  return { ...user, quotaBytes: user.quotaBytes ?? DEFAULT_USER_QUOTA_BYTES };
 }
 
 export function findByUsername(username) {
@@ -54,7 +67,7 @@ export function findByUsername(username) {
   for (const f of fs.readdirSync(USERS_DIR)) {
     if (!f.endsWith('.json')) continue;
     const user = JSON.parse(fs.readFileSync(path.join(USERS_DIR, f), 'utf8'));
-    if (user.username.toLowerCase() === target) return user;
+    if (user.username.toLowerCase() === target) return withDefaults(user);
   }
   return null;
 }
@@ -62,7 +75,7 @@ export function findByUsername(username) {
 export function findById(id) {
   const file = fileFor(id);
   if (!fs.existsSync(file)) return null;
-  return JSON.parse(fs.readFileSync(file, 'utf8'));
+  return withDefaults(JSON.parse(fs.readFileSync(file, 'utf8')));
 }
 
 // Creates the Forge account AND its backing Linux system user in one step -- there is never a
@@ -87,7 +100,18 @@ export function createUser({ username, password, role = 'user' }) {
     gid: os.gid,
     homeDir: os.homeDir,
     projectsDir: os.projectsDir,
+    quotaBytes: DEFAULT_USER_QUOTA_BYTES,
   };
+  return save(user);
+}
+
+// Admin-only (see server.js) -- "increased by admin on request", not self-service, since it's
+// the one lever against the platform-wide total filling up.
+export function setUserQuota(id, quotaBytes) {
+  const user = findById(id);
+  if (!user) throw Object.assign(new Error('No such account'), { status: 404 });
+  if (!Number.isFinite(quotaBytes) || quotaBytes <= 0) throw Object.assign(new Error('Invalid quota'), { status: 400 });
+  user.quotaBytes = quotaBytes;
   return save(user);
 }
 

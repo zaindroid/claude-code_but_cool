@@ -5,6 +5,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chownToUser } from './osUsers.js';
+import { checkCanCreateProject } from './diskUsage.js';
+
+const DATA_DIR = process.env.DATA_DIR || path.resolve(process.cwd(), 'data');
 
 const NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 
@@ -39,6 +42,11 @@ export function createProject(user, name) {
   const dir = projectPath(user, name);
   if (!dir) throw Object.assign(new Error('Invalid project name -- letters, numbers, dots, dashes and underscores only'), { status: 400 });
   if (fs.existsSync(dir)) throw Object.assign(new Error('A project with this name already exists'), { status: 409 });
+  // Checked here, not just once at signup -- a project created when there was headroom can still
+  // grow past quota later through the terminal (a big git clone, node_modules, ...); this is the
+  // one point new *growth* through Forge's own UI can actually be stopped. See diskUsage.js for
+  // why this is an honest, app-level limit, not a kernel-enforced one.
+  checkCanCreateProject(user, { dataDir: DATA_DIR });
   fs.mkdirSync(dir, { recursive: true });
   chownToUser(dir, user.uid, user.gid);
   return { name, createdAt: new Date().toISOString() };

@@ -25,3 +25,10 @@ env:
 # or a whole other Anthropic-API-compatible endpoint like DeepSeek/Kimi) from Forge's own Settings
 # page, stored per-account, encrypted -- see backend/src/settings.js. There is deliberately no
 # server-wide key shared across accounts.
+#
+# PLATFORM_QUOTA_GB (default 100) and DEFAULT_USER_QUOTA_GB (default 20) are also not declared
+# here -- both are optional, code-level defaults (backend/src/diskUsage.js), not tied to any
+# external account, so there's nothing deploy() needs supplied for them. This is an app-level
+# limit enforced at project creation, not a kernel-enforced disk quota -- the host filesystem
+# (plain ext4, no project-quota support) doesn't safely support a real one without touching
+# every other app's storage on the same shared disk. See diskUsage.js's own comment.

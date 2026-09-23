@@ -7,15 +7,17 @@ import { WebSocketServer } from 'ws';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 
 import { login, logout, authStatus, requireAuth, requireAdmin, bootstrapAdmin, userFromCookieHeader } from './auth.js';
-import { listUsers, createUser, reconcileOsUsers } from './users.js';
+import { listUsers, createUser, setUserQuota, reconcileOsUsers } from './users.js';
 import { listProjects, createProject } from './projects.js';
 import { listDir, readFile } from './files.js';
 import { attachTerminal } from './pty.js';
 import { readSettingsForClient, writeSettings, clearAuthToken, PRESETS } from './settings.js';
+import { duBytes, PLATFORM_QUOTA_BYTES, GB } from './diskUsage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = Number(process.env.PORT) || 8080;
+const DATA_DIR = process.env.DATA_DIR || path.resolve(process.cwd(), 'data');
 
 if (!process.env.SESSION_SECRET) {
   console.error('Refusing to start: SESSION_SECRET is not set');
@@ -88,6 +90,17 @@ app.get('/api/file', (req, res) => {
   res.json(file);
 });
 
+// Everyone can see their own usage against their own quota, plus the platform-wide total (not
+// other accounts' individual usage -- that's the admin panel's job, see /api/admin/users below).
+app.get('/api/usage', (req, res) => {
+  res.json({
+    usedBytes: duBytes(req.user.homeDir),
+    quotaBytes: req.user.quotaBytes,
+    platformUsedBytes: duBytes(DATA_DIR),
+    platformQuotaBytes: PLATFORM_QUOTA_BYTES,
+  });
+});
+
 app.get('/api/settings', (req, res) => res.json({ settings: readSettingsForClient(req.user), presets: PRESETS }));
 app.put('/api/settings', (req, res) => {
   try {
@@ -99,12 +112,25 @@ app.put('/api/settings', (req, res) => {
 app.delete('/api/settings/token', (req, res) => res.json({ settings: clearAuthToken(req.user) }));
 
 // Admin-only: the only way any account other than the bootstrap admin ever gets created --
-// invite-only by design, see auth.js's own comment on bootstrapAdmin.
-app.get('/api/admin/users', requireAdmin, (req, res) => res.json({ users: listUsers() }));
+// invite-only by design, see auth.js's own comment on bootstrapAdmin. includeUsage runs a real
+// `du` per account, which is why this isn't also exposed on the plain (non-admin) users list.
+app.get('/api/admin/users', requireAdmin, (req, res) => res.json({ users: listUsers({ includeUsage: true }), platformQuotaBytes: PLATFORM_QUOTA_BYTES, platformUsedBytes: duBytes(DATA_DIR) }));
 app.post('/api/admin/users', requireAdmin, (req, res) => {
   try {
     const user = createUser({ username: String(req.body?.username || '').trim(), password: String(req.body?.password || ''), role: req.body?.role === 'admin' ? 'admin' : 'user' });
     res.json({ id: user.id, username: user.username, role: user.role, createdAt: user.createdAt });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+// "Increased by admin on request" -- no self-service request queue, just a direct admin action;
+// someone asks (however they ask), the admin bumps it here.
+app.patch('/api/admin/users/:id/quota', requireAdmin, (req, res) => {
+  try {
+    const gb = Number(req.body?.quotaGb);
+    if (!Number.isFinite(gb) || gb <= 0) return res.status(400).json({ error: 'quotaGb must be a positive number' });
+    const user = setUserQuota(req.params.id, gb * GB);
+    res.json({ id: user.id, quotaBytes: user.quotaBytes });
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }

@@ -1,4 +1,33 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { getUsage } from '../api.js';
+
+function UsageBar() {
+  const [usage, setUsage] = useState(null);
+
+  useEffect(() => {
+    const load = () => getUsage().then(setUsage).catch(() => {});
+    load();
+    // Usage can grow from inside a terminal (git clone, npm install, ...) with nothing else on
+    // this page changing -- a light poll is simpler than plumbing a refresh signal through every
+    // place that could possibly grow a project.
+    const id = setInterval(load, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!usage) return null;
+  const pct = Math.min(100, (usage.usedBytes / usage.quotaBytes) * 100);
+  const gb = (bytes) => (bytes / 1024 ** 3).toFixed(1);
+  const isFull = usage.usedBytes >= usage.quotaBytes;
+
+  return (
+    <div className="usage-bar" title={`${gb(usage.usedBytes)}GB of ${gb(usage.quotaBytes)}GB used`}>
+      <div className="usage-bar-track">
+        <div className={`usage-bar-fill ${isFull ? 'is-full' : ''}`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="usage-bar-label">{gb(usage.usedBytes)}GB / {gb(usage.quotaBytes)}GB</span>
+    </div>
+  );
+}
 
 export default function Sidebar({ projects, activeProject, onSelect, onCreate, collapsed, onToggle }) {
   const [creating, setCreating] = useState(false);
@@ -64,6 +93,8 @@ export default function Sidebar({ projects, activeProject, onSelect, onCreate, c
           <span>+</span> New project
         </button>
       )}
+
+      <UsageBar />
     </aside>
   );
 }

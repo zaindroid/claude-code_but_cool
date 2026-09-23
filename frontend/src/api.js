@@ -24,3 +24,6 @@ export const clearAuthToken = () => call('/api/settings/token', { method: 'DELET
 
 export const listUsers = () => call('/api/admin/users');
 export const createUserAccount = (username, password) => call('/api/admin/users', { method: 'POST', body: JSON.stringify({ username, password }) });
+export const setUserQuota = (id, quotaGb) => call(`/api/admin/users/${id}/quota`, { method: 'PATCH', body: JSON.stringify({ quotaGb }) });
+
+export const getUsage = () => call('/api/usage');
