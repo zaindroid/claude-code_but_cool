@@ -1,9 +1,16 @@
 // One real PTY per open terminal tab, running an ordinary login shell in the project's own
-// directory, as that Forge account's own Linux user (uid/gid -- see osUsers.js) -- this is the
-// actual isolation boundary between users, enforced by the kernel, not by this file remembering
-// to check who is allowed to see what. Claude Code is not auto-launched; you type `claude`
-// yourself, exactly like using it locally, which is the whole point (no flag-wiring to keep in
-// sync with the real CLI).
+// directory, as that Forge account's own Linux user -- this is the actual isolation boundary
+// between users, enforced by the kernel, not by this file remembering to check who is allowed to
+// see what. Claude Code is not auto-launched; you type `claude` yourself, exactly like using it
+// locally, which is the whole point (no flag-wiring to keep in sync with the real CLI).
+//
+// Spawned via `su`, not node-pty's own uid/gid spawn options -- live-verified 2026-09-23 that
+// those alone are not enough: Node's child_process (and node-pty underneath it) call setuid/
+// setgid on the forked child but never initgroups(), so the child silently keeps the *parent*
+// process's supplementary groups. Since the parent here is root, that meant every "isolated"
+// user's shell was still a member of the root group. `su` is the real, standard tool for
+// switching users properly (it calls initgroups() itself) -- used here without the login (`-`)
+// flag, so it does not also reset cwd/environment, which stay under this file's own control.
 import pty from 'node-pty';
 import { projectPath } from './projects.js';
 import { providerEnv } from './settings.js';
@@ -31,13 +38,11 @@ export function attachTerminal(ws, user, { project, sessionId, cols, rows }) {
     // Read fresh on every new terminal, not cached at startup, so a settings change applies to
     // the next terminal opened without needing to restart the whole app -- an already-running
     // shell keeps whatever env it started with, same as exporting a variable in any real shell.
-    const term = pty.spawn(SHELL, [], {
+    const term = pty.spawn('su', [user.linuxUsername, '-s', SHELL], {
       name: 'xterm-256color',
       cols: cols || 80,
       rows: rows || 24,
       cwd,
-      uid: user.uid,
-      gid: user.gid,
       env: { HOME: user.homeDir, USER: user.linuxUsername, PATH: process.env.PATH, TERM: 'xterm-256color', ...providerEnv(user) },
     });
     entry = { term, timeout: null };
