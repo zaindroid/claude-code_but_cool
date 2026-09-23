@@ -3,6 +3,7 @@
 // it locally, which is the whole point (no flag-wiring to keep in sync with the real CLI).
 import pty from 'node-pty';
 import { projectPath } from './projects.js';
+import { providerEnv } from './settings.js';
 
 const SHELL = process.env.SHELL || (process.platform === 'win32' ? 'powershell.exe' : 'bash');
 
@@ -24,12 +25,15 @@ export function attachTerminal(ws, { project, sessionId, cols, rows }) {
   if (entry) {
     clearTimeout(entry.timeout);
   } else {
+    // Read fresh on every new terminal, not cached at startup, so a settings change applies to
+    // the next terminal opened without needing to restart the whole app -- an already-running
+    // shell keeps whatever env it started with, same as exporting a variable in any real shell.
     const term = pty.spawn(SHELL, [], {
       name: 'xterm-256color',
       cols: cols || 80,
       rows: rows || 24,
       cwd,
-      env: { ...process.env, TERM: 'xterm-256color' },
+      env: { ...process.env, TERM: 'xterm-256color', ...providerEnv() },
     });
     entry = { term, timeout: null };
     if (sessionId) sessions.set(sessionId, entry);

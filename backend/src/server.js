@@ -10,6 +10,7 @@ import { login, logout, authStatus, requireAuth, sessionFromCookieHeader } from 
 import { listProjects, createProject } from './projects.js';
 import { listDir, readFile } from './files.js';
 import { attachTerminal } from './pty.js';
+import { readSettingsForClient, writeSettings, clearAuthToken, PRESETS } from './settings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -81,6 +82,16 @@ app.get('/api/file', (req, res) => {
   if (!file) return res.status(404).json({ error: 'Not found' });
   res.json(file);
 });
+
+app.get('/api/settings', (req, res) => res.json({ settings: readSettingsForClient(), presets: PRESETS }));
+app.put('/api/settings', (req, res) => {
+  try {
+    res.json({ settings: writeSettings(req.body || {}) });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+app.delete('/api/settings/token', (req, res) => res.json({ settings: clearAuthToken() }));
 
 // A dev server the person starts inside their project's terminal (npm run dev, etc) shows up
 // here once they tell Forge which port it's on -- kept as a plain per-request header rather than
