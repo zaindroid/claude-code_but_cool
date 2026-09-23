@@ -25,14 +25,14 @@ export default function App() {
   const [openTerminals, setOpenTerminals] = useState([]);
   const [tab, setTab] = useState('terminal');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [theme, setTheme] = useState(() => localStorage.getItem('forge-theme') || 'dark');
+  const [theme, setTheme] = useState(() => localStorage.getItem('codez-theme') || 'dark');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     try {
-      localStorage.setItem('forge-theme', theme);
+      localStorage.setItem('codez-theme', theme);
     } catch {
       /* not critical */
     }

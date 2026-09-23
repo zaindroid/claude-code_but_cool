@@ -1,10 +1,10 @@
-// Which model provider `claude` talks to -- one config per Forge account, stored under that
+// Which model provider `claude` talks to -- one config per Codez account, stored under that
 // user's own home directory (so the same OS-level permissions that isolate their projects isolate
 // their API key too) and applied to every one of their terminals. Anthropic itself needs nothing
 // here (an interactive `claude login` in the terminal is enough, see pty.js/README); an API key or
 // a whole other Anthropic-API-compatible provider (DeepSeek, Kimi/Moonshot, anything documented
 // the same way) goes through ANTHROPIC_BASE_URL/AUTH_TOKEN, exactly the env vars the real `claude`
-// CLI itself reads -- Forge does not reimplement any of that, it just sets the same environment a
+// CLI itself reads -- Codez does not reimplement any of that, it just sets the same environment a
 // person would export by hand before running `claude`.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -15,7 +15,7 @@ const FIELDS = ['provider', 'baseUrl', 'authToken', 'model', 'smallModel'];
 const DEFAULTS = { provider: 'anthropic', baseUrl: '', authToken: '', model: '', smallModel: '' };
 
 function fileFor(user) {
-  return path.join(user.homeDir, '.forge-settings.json.enc');
+  return path.join(user.homeDir, '.codez-settings.json.enc');
 }
 
 // authToken is a real credential (an Anthropic API key or another provider's), so it is kept
@@ -25,7 +25,7 @@ function fileFor(user) {
 function key() {
   const secret = process.env.SESSION_SECRET;
   if (!secret) throw new Error('SESSION_SECRET is not set');
-  return crypto.createHash('sha256').update(`forge-settings:${secret}`).digest();
+  return crypto.createHash('sha256').update(`codez-settings:${secret}`).digest();
 }
 
 function encrypt(text) {
@@ -92,7 +92,7 @@ export function clearAuthToken(user) {
 }
 
 // Exactly the environment `claude` itself reads (see the DeepSeek/Kimi-style integration docs) --
-// Forge sets these before spawning the shell so running `claude` in any project's terminal picks
+// Codez sets these before spawning the shell so running `claude` in any project's terminal picks
 // the configured provider up automatically, with nothing to export by hand each time.
 export function providerEnv(user) {
   const s = readSettings(user);

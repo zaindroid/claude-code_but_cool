@@ -1,4 +1,4 @@
-// Real OS-level isolation between Forge accounts: each Forge user gets an actual Linux system
+// Real OS-level isolation between Codez accounts: each Codez user gets an actual Linux system
 // user, with their own home directory under the persistent volume, and every shell/file
 // operation for them runs as that uid/gid -- enforced by the kernel's own file permissions, not
 // by application code remembering to check an owner field. This is why the main process has to
@@ -18,8 +18,8 @@ import path from 'node:path';
 
 const HOMES_ROOT = process.env.HOMES_ROOT || path.join(process.env.DATA_DIR || path.resolve(process.cwd(), 'data'), 'homes');
 
-// "fu_" (Forge user) as a fixed prefix guarantees this never collides with a real system account
-// (root, daemon, www-data, ...) no matter what the person picks as their Forge username.
+// "fu_" (Codez user) as a fixed prefix guarantees this never collides with a real system account
+// (root, daemon, www-data, ...) no matter what the person picks as their Codez username.
 export function linuxUsernameFor(forgeUsername) {
   const safe = forgeUsername.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 28);
   return `fu_${safe || 'user'}`;
@@ -53,7 +53,7 @@ export function createOsUser(forgeUsername) {
   return { linuxUsername, uid, gid, homeDir, projectsDir };
 }
 
-// Every directory/file Forge's own (root) process creates on a user's behalf -- a new project, a
+// Every directory/file Codez's own (root) process creates on a user's behalf -- a new project, a
 // settings file -- has to be handed back to them explicitly; root creating it means root owns it
 // by default, which would defeat the whole point.
 export function chownToUser(targetPath, uid, gid) {
@@ -70,7 +70,7 @@ function osUserExists(linuxUsername) {
 }
 
 // /etc/passwd and /etc/group live in the CONTAINER's own filesystem, not the persistent volume --
-// unlike everything under DATA_DIR (home directories, Forge's own account metadata), a Linux
+// unlike everything under DATA_DIR (home directories, Codez's own account metadata), a Linux
 // system user itself does not survive a redeploy or restart onto a fresh container, even though
 // its files, still owned by that same uid/gid, do. Without this, every account would work right
 // up until the next deploy and then silently be unable to open a terminal at all (`su: user ...

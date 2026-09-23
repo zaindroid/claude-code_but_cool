@@ -29,7 +29,7 @@ export default function Login({ onSignedIn }) {
             <path d="M4 17L10 3l6 14M6.2 12h7.6M18 21l3-9 3 9" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </div>
-        <h1>Forge</h1>
+        <h1>Codez</h1>
         <p className="login-sub">A terminal for Claude Code, on your own server.</p>
         <form onSubmit={submit}>
           <input

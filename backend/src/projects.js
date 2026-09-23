@@ -44,7 +44,7 @@ export function createProject(user, name) {
   if (fs.existsSync(dir)) throw Object.assign(new Error('A project with this name already exists'), { status: 409 });
   // Checked here, not just once at signup -- a project created when there was headroom can still
   // grow past quota later through the terminal (a big git clone, node_modules, ...); this is the
-  // one point new *growth* through Forge's own UI can actually be stopped. See diskUsage.js for
+  // one point new *growth* through Codez's own UI can actually be stopped. See diskUsage.js for
   // why this is an honest, app-level limit, not a kernel-enforced one.
   checkCanCreateProject(user, { dataDir: DATA_DIR });
   fs.mkdirSync(dir, { recursive: true });

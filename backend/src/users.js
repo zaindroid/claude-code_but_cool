@@ -78,8 +78,8 @@ export function findById(id) {
   return withDefaults(JSON.parse(fs.readFileSync(file, 'utf8')));
 }
 
-// Creates the Forge account AND its backing Linux system user in one step -- there is never a
-// Forge account without a real OS user behind it, so nothing downstream has to handle "what if
+// Creates the Codez account AND its backing Linux system user in one step -- there is never a
+// Codez account without a real OS user behind it, so nothing downstream has to handle "what if
 // this user has no home directory yet".
 export function createUser({ username, password, role = 'user' }) {
   if (!USERNAME_RE.test(username || '')) {

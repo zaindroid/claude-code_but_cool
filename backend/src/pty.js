@@ -1,5 +1,5 @@
 // One real PTY per open terminal tab, running an ordinary login shell in the project's own
-// directory, as that Forge account's own Linux user -- this is the actual isolation boundary
+// directory, as that Codez account's own Linux user -- this is the actual isolation boundary
 // between users, enforced by the kernel, not by this file remembering to check who is allowed to
 // see what. Claude Code is not auto-launched; you type `claude` yourself, exactly like using it
 // locally, which is the whole point (no flag-wiring to keep in sync with the real CLI).

@@ -4,7 +4,7 @@ import { listUsers, createUserAccount, setUserQuota } from '../api.js';
 const GB = 1024 ** 3;
 const gb = (bytes) => (bytes / GB).toFixed(1);
 
-// Admin-only: the one place new accounts get created. No self-signup anywhere in Forge -- every
+// Admin-only: the one place new accounts get created. No self-signup anywhere in Codez -- every
 // account here got a real Linux system user created for it the moment it was made (osUsers.js),
 // which is the actual isolation between people, not just a login screen.
 export default function Admin({ onClose }) {
@@ -121,7 +121,7 @@ export default function Admin({ onClose }) {
           {error && <div className="settings-error">{error}</div>}
           {justCreated && (
             <div className="admin-created">
-              Created <strong>{justCreated.username}</strong>. Send them this password directly -- Forge never shows it again: <code>{justCreated.password}</code>
+              Created <strong>{justCreated.username}</strong>. Send them this password directly -- Codez never shows it again: <code>{justCreated.password}</code>
             </div>
           )}
           <div className="settings-actions">

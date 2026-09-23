@@ -62,7 +62,7 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 app.get('/ready', (req, res) => (ready ? res.json({ status: 'ready' }) : res.status(503).json({ status: 'starting' })));
 app.get('/version', (req, res) => res.json({ sha: process.env.APP_SHA || 'unknown', built: process.env.APP_BUILT || 'unknown' }));
 app.get('/openapi.json', (req, res) =>
-  res.json({ openapi: '3.0.0', info: { title: 'Forge', version: '0.1.0' }, paths: { '/api/projects': {}, '/api/files': {}, '/api/file': {}, '/api/admin/users': {} } })
+  res.json({ openapi: '3.0.0', info: { title: 'Codez', version: '0.1.0' }, paths: { '/api/projects': {}, '/api/files': {}, '/api/file': {}, '/api/admin/users': {} } })
 );
 
 app.post('/api/login', login);
@@ -137,10 +137,10 @@ app.patch('/api/admin/users/:id/quota', requireAdmin, (req, res) => {
 });
 
 // A dev server the person starts inside their project's terminal (npm run dev, etc) shows up
-// here once they tell Forge which port it's on -- kept as a plain per-request header rather than
+// here once they tell Codez which port it's on -- kept as a plain per-request header rather than
 // server-side state, since the only thing that needs to know is this one proxy call itself.
 app.use('/preview/:project', requireAuth, (req, res, next) => {
-  const port = Number(req.headers['x-forge-preview-port']) || Number(req.query.port);
+  const port = Number(req.headers['x-codez-preview-port']) || Number(req.query.port);
   if (!port || port < 1 || port > 65535) return res.status(400).json({ error: 'Missing or invalid preview port' });
   createProxyMiddleware({
     target: `http://127.0.0.1:${port}`,
@@ -159,7 +159,7 @@ app.get('*', (req, res) => {
 
 const server = app.listen(PORT, () => {
   ready = true;
-  console.log(`Forge listening on :${PORT}`);
+  console.log(`Codez listening on :${PORT}`);
 });
 
 const wss = new WebSocketServer({ noServer: true });

@@ -22,7 +22,7 @@ env:
   ADMIN_PASSWORD:
     required: true
 # ANTHROPIC_API_KEY is not a top-level env var here -- each account sets its own provider (API key,
-# or a whole other Anthropic-API-compatible endpoint like DeepSeek/Kimi) from Forge's own Settings
+# or a whole other Anthropic-API-compatible endpoint like DeepSeek/Kimi) from Codez's own Settings
 # page, stored per-account, encrypted -- see backend/src/settings.js. There is deliberately no
 # server-wide key shared across accounts.
 #

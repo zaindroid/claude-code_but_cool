@@ -9,13 +9,13 @@ RUN npm run build
 # Runtime image: node-pty needs real build tools (python3, make, g++) to compile against this
 # image's own Node ABI -- there is no getting around that the way there is for pure-JS deps.
 # `passwd` provides useradd/id -- see backend/src/osUsers.js, the real per-account isolation:
-# each Forge user gets an actual Linux system user, not just an app-level ownership check.
+# each Codez user gets an actual Linux system user, not just an app-level ownership check.
 FROM node:20-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 make g++ git curl passwd \
     && rm -rf /var/lib/apt/lists/*
 
-# The real Claude Code CLI -- what actually runs inside Forge's terminal.
+# The real Claude Code CLI -- what actually runs inside Codez's terminal.
 RUN npm install -g @anthropic-ai/claude-code
 
 WORKDIR /app

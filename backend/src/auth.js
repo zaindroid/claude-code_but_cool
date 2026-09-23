@@ -1,4 +1,4 @@
-// Real accounts now, not one shared password -- each session is tied to one Forge user (and, one
+// Real accounts now, not one shared password -- each session is tied to one Codez user (and, one
 // level down, one real Linux system user -- see users.js/osUsers.js). Invite-only: the very first
 // account (an "admin") is created automatically at first boot from ADMIN_PASSWORD, and only an
 // admin can create further accounts afterward (server.js's /api/admin/users) -- nobody
@@ -6,7 +6,7 @@
 import crypto from 'node:crypto';
 import { verifyLogin, findById, createUser, isFirstBoot } from './users.js';
 
-const COOKIE_NAME = 'forge_session';
+const COOKIE_NAME = 'codez_session';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days -- a personal tool, not re-logging in weekly
 
 function secret() {
@@ -54,7 +54,7 @@ function setSessionCookie(req, res, userId) {
   res.setHeader('Set-Cookie', `${COOKIE_NAME}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secureFlag}`);
 }
 
-// Runs once, the first time Forge ever starts with no accounts at all -- turns ADMIN_PASSWORD
+// Runs once, the first time Codez ever starts with no accounts at all -- turns ADMIN_PASSWORD
 // into the first real account so there is always exactly one way in on a fresh deploy, with
 // nothing left in an ambiguous "nobody can sign in yet" state.
 export function bootstrapAdmin() {

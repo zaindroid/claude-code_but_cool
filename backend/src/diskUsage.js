@@ -1,6 +1,6 @@
 // Real disk usage, not an estimate -- `du` walks the actual filesystem under a home directory,
 // same as a person would run by hand to check. Enforced at the one point growth actually happens
-// through Forge's own UI (creating a new project); it can't stop someone from, say, git-cloning a
+// through Codez's own UI (creating a new project); it can't stop someone from, say, git-cloning a
 // huge repo into an *existing* project mid-terminal-session -- see app.yaml's own note on why a
 // real kernel-enforced quota isn't what this is. This is a real, honest limit on the main growth
 // path, not a hard wall.

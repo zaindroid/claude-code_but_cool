@@ -1,21 +1,33 @@
-# Forge
+# Codez
 
 A real terminal for Claude Code, hosted on your own server, reachable from anywhere. Not a chat
 UI on top of the Claude API -- an actual shell, running an actual PTY, in which you run `claude`
-exactly the way you would locally. Password-gated (single user), with a project switcher, a
-read-only file browser, and a preview pane for whatever dev server your project runs.
+exactly the way you would locally. Invite-only accounts, each with real OS-level isolation, a
+project switcher, a read-only file browser, and a preview pane for whatever dev server your
+project runs.
 
 ## How it's built
 
 - **Backend** (`backend/`): Express + `ws` + `node-pty`. One PTY per open project terminal,
-  bridged to the browser over a WebSocket. A signed session cookie gates every API route and the
-  WebSocket upgrade itself -- there is no per-user account system, just one password
-  (`ACCESS_PASSWORD`) for the one person this is for.
+  bridged to the browser over a WebSocket, spawned via `su` as that account's own Linux system
+  user (see `osUsers.js`/`pty.js`) -- the actual security boundary between accounts is the kernel's
+  own file permissions, not application logic. A signed session cookie (tied to one account) gates
+  every API route and the WebSocket upgrade itself.
+- **Accounts** (`users.js`, `auth.js`): invite-only -- the first account is created from
+  `ADMIN_USERNAME`/`ADMIN_PASSWORD` at first boot, every other one is created by an admin from
+  Codez's own Accounts panel. Nobody self-registers; this is real shell access to your server.
 - **Frontend** (`frontend/`): React + Vite, `@xterm/xterm` for the terminal itself. Claude-inspired
   warm/dark visual design, not a literal clone of Anthropic's own product -- this is a personal
   tool, not something presented as an official Claude product.
-- **Projects**: each one is a directory under `DATA_DIR/projects`, and is both what the file
-  browser shows and the shell's starting directory -- opening a project is opening a folder.
+- **Projects**: each one is a directory under the signed-in account's own home directory, and is
+  both what the file browser shows and the shell's starting directory -- opening a project is
+  opening a folder.
+- **Storage quotas** (`diskUsage.js`): 20GB per account by default, 100GB platform-wide, admin-
+  adjustable per account. Enforced at project creation, not a kernel quota -- see "Storage" below
+  for why, and for what `df` inside a terminal actually reports.
+- **Provider settings** (`settings.js`): each account points `claude` at Anthropic directly (an
+  interactive login, or an API key), or at any other Anthropic-API-compatible endpoint (DeepSeek,
+  Kimi/Moonshot, a custom one) -- stored per account, encrypted at rest.
 
 ## Running it locally
 
@@ -23,36 +35,66 @@ read-only file browser, and a preview pane for whatever dev server your project 
 cd backend && npm install
 cd ../frontend && npm install && npm run build   # builds into ../backend/public
 cd ../backend
-SESSION_SECRET=dev ACCESS_PASSWORD=dev npm start
+SESSION_SECRET=dev ADMIN_USERNAME=admin ADMIN_PASSWORD=devpassword123 npm start
 ```
 
-`node-pty` is a native module -- it needs to be built for whatever Node runs `npm start`, same
-kind of gotcha as any native addon (see MailZ's own desktop README for the general pattern, if
-this ever needs multiple runtimes the way that project does).
+Two things only work on Linux, not for local dev on Windows/macOS:
+
+- `node-pty` is a native module -- it needs to be built for whatever Node runs `npm start`, same
+  kind of gotcha as any native addon (see MailZ's own desktop README for the general pattern).
+- Account creation shells out to `useradd`/`id`/`su` (see `osUsers.js`) -- these don't exist on
+  Windows at all, so the app can only fully boot on Linux. `diskUsage.js`'s `du`-based logic can
+  still be exercised in isolation elsewhere (Git Bash ships `du`).
 
 ## Deploying
 
 Through zorc, as any other app here: `analyze_deployment_requirements()` then `deploy()`.
-`app.yaml` declares `SESSION_SECRET` (generated) and `ACCESS_PASSWORD` (you supply this via
-`deploy()`'s `env_overrides` -- pick a real password, this gates shell access to your server).
+`app.yaml` declares `SESSION_SECRET` (generated) and `ADMIN_USERNAME`/`ADMIN_PASSWORD` (supplied
+via `deploy()`'s `env_overrides` -- pick a real password, this becomes the first account and gates
+shell access to your server). The container runs as root deliberately (no `USER` directive) --
+only root can create Linux system users and spawn a process as a different one's uid/gid.
 
-**Persistence is the one open question for this app**: projects and Claude Code's own login
-credentials need to survive a restart/redeploy to be worth anything for daily use. The Dockerfile
-declares a `/data` volume and points `$HOME` and `DATA_DIR` at it, but whether zorc's deploy
-pipeline actually attaches a persistent volume for a plain `kind: coolify` app (as opposed to the
-database-backed persistence `database: true` provisions) has not been confirmed. If it turns out
-not to be, everything under `/data` is wiped on every redeploy -- worth verifying directly rather
-than assuming either way.
+## Persistence
+
+`app.yaml`'s `persistent_storage: {mount_path: /data}` gives this app a real, stable,
+Coolify-managed volume -- without it, confirmed live 2026-09-23, Coolify silently gives a plain
+`VOLUME` line in the Dockerfile a fresh anonymous volume on *every* deploy, wiping accounts,
+projects and Claude Code's own login state each time. This field is only applied on `deploy()`
+(app creation), not `redeploy()` -- an app that already exists without it needs tearing down and
+redeploying fresh to pick it up.
+
+**Linux system users are a separate persistence problem from the volume.** `/etc/passwd`/`/etc/
+group` live in the *container's own* filesystem, not `/data` -- a fresh container after a redeploy
+has no record of any account's Linux user at all, even though that account's files (still owned by
+the same uid/gid) are sitting right there on the persistent volume. `users.js`'s
+`reconcileOsUsers()` runs at startup and recreates every already-known account's system user,
+pinned to the exact uid/gid its files already have -- without this, every account breaks
+(`su: user ... does not exist`) the moment the container is ever recreated.
+
+## Storage
+
+The `/data` volume is a **100GB loopback ext4 filesystem** (`/mnt/data/codez-quota.img`, loop-
+mounted, with an `/etc/fstab` entry so it survives host reboots) on a physical disk separate from
+the one every other app on this host stores its data on -- not Coolify's own default (an anonymous
+volume on the shared NVMe pool). `df` inside a terminal reports this filesystem's own real,
+honest, capped size, not the host's.
+
+This was a deliberate step up from the app-level quota alone: the quota (`diskUsage.js`) is real
+and enforced, but `df` would otherwise still report the full host disk regardless of it, which
+read as misleading rather than just "not a hard kernel wall". A true *per-account* kernel quota
+(ext4 project quotas, or XFS) was considered and rejected -- the shared host filesystem has no
+quota support enabled, and turning it on live would touch every other app's storage on the same
+disk, a bigger risk than this problem justified.
 
 ## Signing in to Claude Code itself
 
-Two ways, same as running Claude Code anywhere else:
+Two ways, same as running Claude Code anywhere else, set per account from the Settings page:
 
-1. **Interactive login**: open a project's terminal, run `claude`, and follow its own sign-in
-   flow (a Claude subscription). Credentials persist at `$HOME/.claude` under the `/data` volume,
-   if that volume is in fact persistent (see above).
-2. **API key**: set `ANTHROPIC_API_KEY` on the deployed app (via zorc's `set_app_env_vars`, not
-   declared in `app.yaml` since it's optional) instead of logging in interactively.
+1. **Interactive login**: open a project's terminal, run `claude`, and follow its own sign-in flow
+   (a Claude subscription). Credentials persist at that account's own `$HOME/.claude`.
+2. **API key, or another provider entirely**: Settings lets an account set an API key (Anthropic
+   or otherwise) or point at a whole different Anthropic-API-compatible endpoint (DeepSeek, Kimi),
+   stored encrypted, injected into that account's terminals automatically.
 
 ## What v1 deliberately leaves out
 
@@ -62,5 +104,7 @@ Two ways, same as running Claude Code anywhere else:
 - Auto-detecting a running dev server's port for Preview -- you tell it the port once instead.
 - Resuming a terminal session across a page reload beyond the current tab's short reconnect grace
   period (60s) -- reloading the page currently starts a fresh shell in that project.
-- Multiple people/accounts -- this is a single-password, single-user tool by design, the same as
-  MailZ's own local-mode philosophy, not a product meant to be shared.
+- Full OS/kernel-level isolation between accounts (separate containers or VMs per account) --
+  what's actually implemented is real Linux-user/file-permission isolation within one shared
+  container (see "How it's built" above), which stops one account from reading another's files but
+  does not sandbox against a container/kernel escape or isolate CPU/memory per account.

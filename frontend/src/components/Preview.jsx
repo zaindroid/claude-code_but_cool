@@ -1,7 +1,7 @@
 import { useState } from 'react';
 
 // Points at whatever dev server is running inside the project's own terminal (npm run dev, etc).
-// Forge does not try to auto-detect the port -- guessing wrong silently is worse than asking once.
+// Codez does not try to auto-detect the port -- guessing wrong silently is worse than asking once.
 export default function Preview({ project }) {
   const [port, setPort] = useState('');
   const [active, setActive] = useState('');
