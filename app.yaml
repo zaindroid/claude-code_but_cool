@@ -3,6 +3,14 @@ memory_mb: 768
 port: 8080
 domains:
   - codez.zaindroid.me
+# A real, stable, Coolify-managed named volume ("codez-data") at this exact path -- without this,
+# Coolify falls back to Docker's own default for a bare `VOLUME` line in the Dockerfile, which is a
+# fresh, empty, anonymous volume on every single deploy/redeploy. Confirmed live 2026-09-23: five
+# different anonymous volumes, one per deploy call, before this field was added. This is only
+# wired up in zorc's create-a-new-app path (deploy/agent.py's add_coolify_persistent_storage), not
+# redeploy() -- an existing app without this already set needs a fresh deploy to pick it up.
+persistent_storage:
+  mount_path: /data
 env:
   SESSION_SECRET:
     generate: hex
