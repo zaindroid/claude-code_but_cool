@@ -7,7 +7,7 @@ import { WebSocketServer } from 'ws';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 
 import { login, logout, authStatus, requireAuth, requireAdmin, bootstrapAdmin, userFromCookieHeader } from './auth.js';
-import { listUsers, createUser, findById } from './users.js';
+import { listUsers, createUser, reconcileOsUsers } from './users.js';
 import { listProjects, createProject } from './projects.js';
 import { listDir, readFile } from './files.js';
 import { attachTerminal } from './pty.js';
@@ -22,6 +22,10 @@ if (!process.env.SESSION_SECRET) {
   process.exit(1);
 }
 try {
+  // Order matters: existing accounts' Linux users have to exist again before bootstrapAdmin
+  // checks isFirstBoot() (a fresh container's /etc/passwd never has them, even though the
+  // account metadata and home directories under DATA_DIR do -- see osUsers.js/users.js).
+  reconcileOsUsers();
   bootstrapAdmin();
 } catch (err) {
   console.error(`Refusing to start: ${err.message}`);

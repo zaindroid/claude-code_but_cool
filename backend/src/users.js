@@ -6,7 +6,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createOsUser } from './osUsers.js';
+import { createOsUser, ensureOsUserExists } from './osUsers.js';
 
 const DATA_DIR = process.env.DATA_DIR || path.resolve(process.cwd(), 'data');
 const USERS_DIR = path.join(DATA_DIR, 'users-meta');
@@ -99,4 +99,15 @@ export function verifyLogin(username, password) {
 
 export function isFirstBoot() {
   return listUsers().length === 0;
+}
+
+// Run once at startup, before the server accepts any request -- see osUsers.js's own comment on
+// ensureOsUserExists for why this has to exist at all (the container's own filesystem, where
+// Linux user accounts live, does not survive a redeploy the way DATA_DIR does).
+export function reconcileOsUsers() {
+  for (const f of fs.readdirSync(USERS_DIR)) {
+    if (!f.endsWith('.json')) continue;
+    const user = JSON.parse(fs.readFileSync(path.join(USERS_DIR, f), 'utf8'));
+    ensureOsUserExists(user);
+  }
 }

@@ -59,3 +59,35 @@ export function createOsUser(forgeUsername) {
 export function chownToUser(targetPath, uid, gid) {
   fs.chownSync(targetPath, uid, gid);
 }
+
+function osUserExists(linuxUsername) {
+  try {
+    execFileSync('id', [linuxUsername], { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// /etc/passwd and /etc/group live in the CONTAINER's own filesystem, not the persistent volume --
+// unlike everything under DATA_DIR (home directories, Forge's own account metadata), a Linux
+// system user itself does not survive a redeploy or restart onto a fresh container, even though
+// its files, still owned by that same uid/gid, do. Without this, every account would work right
+// up until the next deploy and then silently be unable to open a terminal at all (`su: user ...
+// does not exist`) -- live-caught 2026-09-23 testing the very first redeploy after accounts
+// existed. Called once at startup for every already-known account (see users.js), pinning the
+// exact same uid/gid recorded in that account's own metadata -- not a new one -- so it lines up
+// with the ownership already sitting on disk.
+export function ensureOsUserExists({ linuxUsername, uid, gid, homeDir }) {
+  if (osUserExists(linuxUsername)) return;
+  try {
+    execFileSync('groupadd', ['-g', String(gid), linuxUsername], { stdio: 'pipe' });
+  } catch (err) {
+    if (!String(err.stderr || '').includes('already exists')) throw new Error(`Could not recreate the system group: ${err.stderr || err.message}`);
+  }
+  try {
+    execFileSync('useradd', ['-u', String(uid), '-g', String(gid), '-M', '-d', homeDir, '-s', '/usr/sbin/nologin', linuxUsername], { stdio: 'pipe' });
+  } catch (err) {
+    if (!String(err.stderr || '').includes('already exists')) throw new Error(`Could not recreate the system user: ${err.stderr || err.message}`);
+  }
+}
