@@ -1,6 +1,8 @@
 name: forge
 memory_mb: 768
 port: 8080
+domains:
+  - codez.zaindroid.me
 env:
   SESSION_SECRET:
     generate: hex
