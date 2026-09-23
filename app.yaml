@@ -1,4 +1,4 @@
-name: forge
+name: codez
 memory_mb: 768
 port: 8080
 domains:
@@ -6,14 +6,13 @@ domains:
 env:
   SESSION_SECRET:
     generate: hex
-  # The very first account is created automatically from this at first boot -- see
+  # The very first account is created automatically from these two at first boot -- see
   # backend/src/auth.js's bootstrapAdmin. Every other account is invite-only, created by that
   # admin afterward (POST /api/admin/users) -- nobody can self-register.
+  ADMIN_USERNAME:
+    required: true
   ADMIN_PASSWORD:
     required: true
-# ADMIN_USERNAME is not declared here -- it's optional (defaults to "admin" if unset). Pass it via
-# deploy()'s env_overrides alongside ADMIN_PASSWORD if you want the first account's username to be
-# something else.
 # ANTHROPIC_API_KEY is not a top-level env var here -- each account sets its own provider (API key,
 # or a whole other Anthropic-API-compatible endpoint like DeepSeek/Kimi) from Forge's own Settings
 # page, stored per-account, encrypted -- see backend/src/settings.js. There is deliberately no
