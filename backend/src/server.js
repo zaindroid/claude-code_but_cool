@@ -8,11 +8,18 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 
 import { login, logout, authStatus, requireAuth, requireAdmin, bootstrapAdmin, userFromCookieHeader } from './auth.js';
 import { listUsers, createUser, setUserQuota, reconcileOsUsers } from './users.js';
-import { listProjects, createProject } from './projects.js';
+import { listProjects, createProject, projectPath } from './projects.js';
 import { listDir, readFile } from './files.js';
 import { attachTerminal } from './pty.js';
 import { readSettingsForClient, writeSettings, clearAuthToken, PRESETS } from './settings.js';
 import { duBytes, PLATFORM_QUOTA_BYTES, GB } from './diskUsage.js';
+import { listAgents, getAgent } from './agents.js';
+import { readProjectConfig, writeProjectConfig } from './projectConfig.js';
+import { readMcpServers, addMcpServer, removeMcpServer } from './mcp.js';
+import { listSkills, createSkill, deleteSkill } from './skills.js';
+import { listLessons, createLesson, deleteLesson, injectLessonsIntoProject, promoteLessonToSkill } from './lessons.js';
+import { listTemplates, saveProjectAsTemplate } from './templates.js';
+import { getUsageForProjects } from './tokenUsage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -74,10 +81,148 @@ app.use('/api', requireAuth);
 app.get('/api/projects', (req, res) => res.json({ projects: listProjects(req.user) }));
 app.post('/api/projects', (req, res) => {
   try {
-    res.json(createProject(req.user, String(req.body?.name || '').trim()));
+    const agent = req.body?.agent ? String(req.body.agent) : 'claude';
+    const templateId = req.body?.templateId ? String(req.body.templateId) : null;
+    res.json(createProject(req.user, String(req.body?.name || '').trim(), { agent, templateId }));
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }
+});
+
+// Resolves ':project' against the signed-in user only -- projectPath() already refuses anything
+// that isn't a direct child of their own projectsDir (see projects.js), so every route below this
+// point inherits that same path-traversal safety for free.
+function requireProjectDir(req, res) {
+  const dir = projectPath(req.user, req.params.project);
+  if (!dir || !fs.existsSync(dir)) {
+    res.status(404).json({ error: 'No such project' });
+    return null;
+  }
+  return dir;
+}
+
+app.get('/api/agents', (req, res) => res.json({ agents: listAgents() }));
+
+app.get('/api/projects/:project/config', (req, res) => {
+  const dir = requireProjectDir(req, res);
+  if (!dir) return;
+  res.json({ config: readProjectConfig(dir) });
+});
+app.put('/api/projects/:project/config', (req, res) => {
+  const dir = requireProjectDir(req, res);
+  if (!dir) return;
+  try {
+    const patch = {};
+    if (req.body?.agent) {
+      if (!getAgent(String(req.body.agent))) throw Object.assign(new Error('Unknown agent'), { status: 400 });
+      patch.agent = String(req.body.agent);
+    }
+    if (typeof req.body?.legendMode === 'boolean') patch.legendMode = req.body.legendMode;
+    res.json({ config: writeProjectConfig(req.user, dir, patch) });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get('/api/projects/:project/mcp', (req, res) => {
+  const dir = requireProjectDir(req, res);
+  if (!dir) return;
+  res.json({ servers: readMcpServers(dir) });
+});
+app.post('/api/projects/:project/mcp', (req, res) => {
+  const dir = requireProjectDir(req, res);
+  if (!dir) return;
+  try {
+    res.json({ servers: addMcpServer(req.user, dir, String(req.body?.name || '').trim(), req.body || {}) });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+app.delete('/api/projects/:project/mcp/:name', (req, res) => {
+  const dir = requireProjectDir(req, res);
+  if (!dir) return;
+  res.json({ servers: removeMcpServer(req.user, dir, req.params.name) });
+});
+
+// Skills: ?project=<name> scopes to that project's own .claude/skills; omitted scopes to the
+// account's personal ~/.claude/skills, which every one of their projects picks up.
+function skillsScopeDir(req, res) {
+  if (req.query.project) {
+    const dir = projectPath(req.user, String(req.query.project));
+    if (!dir || !fs.existsSync(dir)) {
+      res.status(404).json({ error: 'No such project' });
+      return null;
+    }
+    return dir;
+  }
+  return req.user.homeDir;
+}
+app.get('/api/skills', (req, res) => {
+  const scope = skillsScopeDir(req, res);
+  if (!scope) return;
+  res.json({ skills: listSkills(scope) });
+});
+app.post('/api/skills', (req, res) => {
+  const scope = skillsScopeDir(req, res);
+  if (!scope) return;
+  try {
+    res.json(createSkill(req.user, scope, String(req.body?.name || '').trim(), req.body?.description, req.body?.body));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+app.delete('/api/skills/:name', (req, res) => {
+  const scope = skillsScopeDir(req, res);
+  if (!scope) return;
+  deleteSkill(scope, req.params.name);
+  res.json({ ok: true });
+});
+
+app.get('/api/lessons', (req, res) => res.json({ lessons: listLessons(req.user) }));
+app.post('/api/lessons', (req, res) => {
+  try {
+    res.json(createLesson(req.user, req.body || {}));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+app.delete('/api/lessons/:id', (req, res) => {
+  deleteLesson(req.user, req.params.id);
+  res.json({ ok: true });
+});
+app.post('/api/lessons/:id/promote', (req, res) => {
+  try {
+    res.json(promoteLessonToSkill(req.user, req.params.id));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+app.post('/api/projects/:project/inject-lessons', (req, res) => {
+  const dir = requireProjectDir(req, res);
+  if (!dir) return;
+  try {
+    res.json(injectLessonsIntoProject(req.user, dir, Array.isArray(req.body?.lessonIds) ? req.body.lessonIds : []));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get('/api/templates', (req, res) => res.json({ templates: listTemplates(req.user) }));
+app.post('/api/templates', (req, res) => {
+  const dir = projectPath(req.user, String(req.body?.project || ''));
+  if (!dir || !fs.existsSync(dir)) return res.status(404).json({ error: 'No such project' });
+  try {
+    res.json(saveProjectAsTemplate(req.user, dir, String(req.body?.name || '').trim(), req.body?.description));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// The token-usage HUD -- one call, every open project's real usage (Claude Code only tracked for
+// real right now, see tokenUsage.js), so the frontend can poll one endpoint instead of one per tab.
+app.get('/api/usage/tokens', (req, res) => {
+  const projects = listProjects(req.user).map((p) => ({ name: p.name, dir: projectPath(req.user, p.name), agent: p.agent }));
+  res.json({ usage: getUsageForProjects(req.user, projects) });
 });
 app.get('/api/files', (req, res) => {
   const entries = listDir(req.user, String(req.query.project || ''), String(req.query.path || '.'));

@@ -6,7 +6,10 @@ import '@xterm/xterm/css/xterm.css';
 
 // One real PTY per project, kept alive across a tab switch (Terminal vs Preview) by the parent
 // never unmounting this while the project is open -- only switching which panel is visible.
-export default function TerminalView({ project, active }) {
+// `registerSender`, if given, hands the parent a function that writes a raw string into this
+// project's live terminal -- how AgentBar's guided-mode buttons work: they call the exact same
+// path a real keystroke would, just from a button instead of the keyboard.
+export default function TerminalView({ project, active, registerSender }) {
   const containerRef = useRef(null);
   const termRef = useRef(null);
   const wsRef = useRef(null);
@@ -58,6 +61,12 @@ export default function TerminalView({ project, active }) {
     };
     ws.onclose = () => term.write('\r\n\x1b[2m[disconnected]\x1b[0m\r\n');
 
+    if (registerSender) {
+      registerSender(project, (data) => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data }));
+      });
+    }
+
     const onData = term.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data }));
     });
@@ -74,6 +83,7 @@ export default function TerminalView({ project, active }) {
       onData.dispose();
       ws.close();
       term.dispose();
+      if (registerSender) registerSender(project, null);
     };
     // Intentionally runs once per mounted project -- a project's terminal is created when its tab
     // first opens and torn down only when the project itself is closed, not on every active toggle.

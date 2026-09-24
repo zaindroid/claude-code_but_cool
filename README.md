@@ -86,6 +86,52 @@ read as misleading rather than just "not a hard kernel wall". A true *per-accoun
 quota support enabled, and turning it on live would touch every other app's storage on the same
 disk, a bigger risk than this problem justified.
 
+## Multiple agents, and the guided layer over the terminal
+
+Codez can drive four real coding-agent CLIs (`backend/src/agents.js`): Claude Code, OpenCode,
+Codex and DeepCode, all baked into the image at build time (see the Dockerfile) since accounts are
+real non-root Linux users with no write access to install one themselves mid-session. Whether one
+actually made it into a given build is checked live, not assumed -- `/api/agents` runs `command -v`
+against the container's own PATH, the same PATH every account's shell inherits (see pty.js), so the
+New Project screen only ever claims a tool is available if it genuinely is.
+
+Every project picks one agent at creation, recorded in that project's own `.codez/config.json`
+(`backend/src/projectConfig.js`). Above the terminal, a thin **guided-mode bar** (`AgentBar.jsx`)
+shows buttons for that agent's own real commands -- login, resume, start -- each one just typing
+that exact string into the live PTY, the same as typing it yourself. **Legend mode** turns the bar
+off and hands back exactly the plain terminal Codez always had; nothing about the terminal itself
+changes either way, and it's one click to switch back.
+
+Opening an existing project whose agent is Claude Code checks for a real prior transcript
+(`~/.claude/projects/<sanitized-path>/`, Claude Code's own on-disk convention) and offers **Resume**
+only when one genuinely exists.
+
+## MCP servers, skills, and knowledge transfer between projects
+
+- **MCP servers** (`backend/src/mcp.js`): the Tools panel writes a project's real `.mcp.json` --
+  Claude Code's own documented project-scoped MCP config format, read automatically the moment
+  `claude` starts there. Codez never runs or proxies an MCP server itself, only the same file you'd
+  otherwise hand-edit.
+- **Skills** (`backend/src/skills.js`): real `SKILL.md` files, personal (`~/.claude/skills/`,
+  applies to every project this account opens) or project-scoped (`<project>/.claude/skills/`).
+- **Lessons** (`backend/src/lessons.js`): an account-wide library for carrying something learned in
+  one project into another -- write or paste one, then either **inject** it into a project's own
+  `CLAUDE.md` (Claude Code reads that automatically at startup, another real, existing mechanism)
+  or **promote** it straight into a proper skill. Nothing here is read automatically out of a
+  session's transcript -- you write the lesson, Codez just gives it two real, useful places to land.
+- **Templates** (`backend/src/templates.js`): a few small built-in starters (blank, Node+Express,
+  Python+FastAPI), plus "save this project as a template" for your own -- a real recursive file
+  copy, no templating-language substitution.
+
+## Real token usage, not a guess
+
+The HUD in the bottom-right corner sums real numbers, not an estimate scraped from terminal output:
+Claude Code writes its own transcript for every session as JSONL, with the actual `usage` object
+the API returned on every assistant message (`backend/src/tokenUsage.js` reads exactly that, the
+same accounting Claude Code's own `/cost` uses). OpenCode, Codex and DeepCode aren't wired up yet --
+their own local storage formats weren't verified live in this build, and a guessed number would be
+worse than the HUD honestly saying "not tracked yet" for those.
+
 ## Signing in to Claude Code itself
 
 Two ways, same as running Claude Code anywhere else, set per account from the Settings page:

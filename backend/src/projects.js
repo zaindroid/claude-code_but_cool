@@ -6,6 +6,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chownToUser } from './osUsers.js';
 import { checkCanCreateProject } from './diskUsage.js';
+import { writeProjectConfig, readProjectConfig } from './projectConfig.js';
+import { instantiateTemplate } from './templates.js';
+import { getAgent } from './agents.js';
 
 const DATA_DIR = process.env.DATA_DIR || path.resolve(process.cwd(), 'data');
 
@@ -32,16 +35,23 @@ export function listProjects(user) {
     .readdirSync(user.projectsDir, { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => {
-      const stat = fs.statSync(path.join(user.projectsDir, e.name));
-      return { name: e.name, createdAt: stat.birthtime.toISOString() };
+      const dir = path.join(user.projectsDir, e.name);
+      const stat = fs.statSync(dir);
+      const config = readProjectConfig(dir);
+      // A project that already has a Claude Code transcript directory (see tokenUsage.js) has a
+      // real prior session on disk -- surfaced here so the UI can offer "resume" instead of
+      // always dropping into a fresh session, without guessing from anything in-terminal.
+      const hasSession = config.agent === 'claude' && fs.existsSync(path.join(user.homeDir, '.claude', 'projects', dir.replace(/[/\\]/g, '-')));
+      return { name: e.name, createdAt: stat.birthtime.toISOString(), agent: config.agent, hasSession };
     })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export function createProject(user, name) {
+export function createProject(user, name, { agent = 'claude', templateId = null } = {}) {
   const dir = projectPath(user, name);
   if (!dir) throw Object.assign(new Error('Invalid project name -- letters, numbers, dots, dashes and underscores only'), { status: 400 });
   if (fs.existsSync(dir)) throw Object.assign(new Error('A project with this name already exists'), { status: 409 });
+  if (!getAgent(agent)) throw Object.assign(new Error('Unknown agent'), { status: 400 });
   // Checked here, not just once at signup -- a project created when there was headroom can still
   // grow past quota later through the terminal (a big git clone, node_modules, ...); this is the
   // one point new *growth* through Codez's own UI can actually be stopped. See diskUsage.js for
@@ -49,5 +59,7 @@ export function createProject(user, name) {
   checkCanCreateProject(user, { dataDir: DATA_DIR });
   fs.mkdirSync(dir, { recursive: true });
   chownToUser(dir, user.uid, user.gid);
-  return { name, createdAt: new Date().toISOString() };
+  if (templateId) instantiateTemplate(user, templateId, dir);
+  writeProjectConfig(user, dir, { agent, template: templateId });
+  return { name, createdAt: new Date().toISOString(), agent };
 }

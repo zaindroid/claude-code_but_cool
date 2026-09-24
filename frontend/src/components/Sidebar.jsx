@@ -29,23 +29,7 @@ function UsageBar() {
   );
 }
 
-export default function Sidebar({ projects, activeProject, onSelect, onCreate, collapsed, onToggle }) {
-  const [creating, setCreating] = useState(false);
-  const [name, setName] = useState('');
-  const [error, setError] = useState('');
-
-  async function submit(e) {
-    e.preventDefault();
-    setError('');
-    try {
-      await onCreate(name.trim());
-      setName('');
-      setCreating(false);
-    } catch (err) {
-      setError(err.message || 'Could not create the project');
-    }
-  }
-
+export default function Sidebar({ projects, activeProject, onSelect, onNewProject, collapsed, onToggle }) {
   return (
     <aside className={`sidebar ${collapsed ? 'is-collapsed' : ''}`}>
       <div className="sidebar-head">
@@ -68,31 +52,15 @@ export default function Sidebar({ projects, activeProject, onSelect, onCreate, c
           >
             <span className="project-dot" />
             <span className="project-name">{p.name}</span>
+            {p.hasSession && <span className="project-session-dot" title="Has a previous session to resume" />}
           </button>
         ))}
         {!projects.length && <div className="project-empty">No projects yet</div>}
       </div>
 
-      {creating ? (
-        <form className="project-create" onSubmit={submit}>
-          <input
-            autoFocus
-            placeholder="project-name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Escape' && setCreating(false)}
-          />
-          {error && <div className="project-create-error">{error}</div>}
-          <div className="project-create-actions">
-            <button type="submit" disabled={!name.trim()}>Create</button>
-            <button type="button" onClick={() => setCreating(false)}>Cancel</button>
-          </div>
-        </form>
-      ) : (
-        <button type="button" className="project-add" onClick={() => setCreating(true)}>
-          <span>+</span> New project
-        </button>
-      )}
+      <button type="button" className="project-add" onClick={onNewProject}>
+        <span>+</span> New project
+      </button>
 
       <UsageBar />
     </aside>
