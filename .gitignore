@@ -4,3 +4,4 @@ backend/data/
 frontend/dist/
 .env
 *.log
+AGENT_CONTEXT/
