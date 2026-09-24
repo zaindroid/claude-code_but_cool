@@ -27,9 +27,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # just trusts that this section worked.
 RUN npm install -g @anthropic-ai/claude-code
 RUN npm install -g @openai/codex || echo "codex install failed -- will show as unavailable"
-RUN (curl -fsSL https://opencode.ai/v2/install | bash) || echo "opencode install failed -- will show as unavailable"
+# The installer drops the real binary under $HOME (== /root here, since this stage builds as
+# root) -- fine for root's own shell, but every account's own terminal runs as that account's own
+# non-root Linux user via `su` (see pty.js), and /root itself is mode 0700: a different uid can't
+# traverse into it at all, PATH or no PATH. Copying the actual binary out to /usr/local/bin (the
+# same already-world-executable directory npm/pip's own global installs already use, which is why
+# claude/codex/deepcode never had this problem) is the fix -- confirmed live 2026-09-24, `opencode`
+# resolved via `su`'s inherited PATH but still failed with "command not found" until this copy.
+RUN (curl -fsSL https://opencode.ai/v2/install | bash && cp /root/.opencode/bin/opencode /usr/local/bin/opencode) || echo "opencode install failed -- will show as unavailable"
 RUN pip install --break-system-packages --no-cache-dir deepcode-hku || echo "deepcode install failed -- will show as unavailable"
-ENV PATH="/root/.opencode/bin:${PATH}"
 
 WORKDIR /app
 COPY backend/package.json ./
