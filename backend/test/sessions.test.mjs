@@ -7,7 +7,7 @@ import path from 'node:path';
 
 fs.chownSync = () => {}; // no-op: this test is about session records, not ownership
 
-const { createSession, listSessions, listAllSessions, updateSession, deleteSession, findSessionByName, readSessions } =
+const { createSession, listSessions, listAllSessions, updateSession, deleteSession, findSessionByName, readSessions, launchCommand } =
   await import('file://' + path.resolve('backend/src/sessions.js').replace(/\\/g, '/'));
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codez-sess-'));
@@ -69,6 +69,34 @@ check('teleport state persists', readSessions(path.join(user.projectsDir, 'alpha
 // corrupt file degrades to empty rather than throwing
 fs.writeFileSync(path.join(user.projectsDir, 'beta', '.codez', 'sessions.json'), '{not json', 'utf8');
 check('corrupt sessions.json reads as empty', readSessions(path.join(user.projectsDir, 'beta')).sessions.length === 0);
+
+// Per-session agent choice. A project's crew can mix CLIs, so the launch command has to come
+// from the session's own agent and not from a project-wide assumption -- and only Claude Code
+// gets the named-session flags, because it is the only one of the four that has them.
+const oc = createSession(user, 'beta', { name: 'opencoder', agent: 'opencode' });
+check('records the chosen agent', oc.agent === 'opencode');
+throws('rejects an unknown agent', () => createSession(user, 'beta', { name: 'ghost', agent: 'nope' }), 400);
+check('defaults to claude', createSession(user, 'beta', { name: 'plainclaude' }).agent === 'claude');
+
+const claudeFresh = launchCommand({ ...a, agent: 'claude' }, { resume: false });
+check('claude fresh uses --session-id and --name', claudeFresh === `claude --session-id ${a.claudeSessionId} --name scout`, claudeFresh);
+const claudeResume = launchCommand({ ...a, agent: 'claude' }, { resume: true });
+check('claude resume uses --resume', claudeResume === `claude --resume ${a.claudeSessionId} --name scout`, claudeResume);
+const claudeFork = launchCommand({ ...a, agent: 'claude' }, { resume: true, fork: true });
+check('claude fork suffixes the name', claudeFork.endsWith('--fork-session --name scout-fork'), claudeFork);
+
+// The other three: their own real launch commands, with none of Claude Code's session flags
+// smuggled in -- passing --session-id to opencode would simply be an error.
+check('opencode launches plainly', launchCommand(oc, { resume: false }) === 'opencode', launchCommand(oc, { resume: false }));
+check('opencode resume is --continue', launchCommand(oc, { resume: true }) === 'opencode --continue', launchCommand(oc, { resume: true }));
+check(
+  'no claude flags leak into another agent',
+  !launchCommand(oc, { resume: true, fork: true }).includes('--session-id') &&
+    !launchCommand(oc, { resume: true, fork: true }).includes('--name'),
+  launchCommand(oc, { resume: true, fork: true })
+);
+check('codex launches plainly', launchCommand({ ...oc, agent: 'codex' }, { resume: true }) === 'codex');
+check('deepcode launches plainly', launchCommand({ ...oc, agent: 'deepcode' }, { resume: true }) === 'deepcode');
 
 // delete
 deleteSession(user, 'alpha', a.id);

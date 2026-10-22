@@ -21,6 +21,7 @@ import {
   listProjects,
   createProject,
   listCrew,
+  listAgents,
   sessionLaunchCommand,
   deleteSession,
   getTokenUsage,
@@ -73,7 +74,15 @@ export default function App() {
   // line now rather than in a floating HUD: the old HUD was one of the elements the layout-shift
   // probe named repeatedly, and a number this quiet does not need to float over the screen.
   const [usage, setUsage] = useState([]);
+  // The agent CLIs this container can actually run, with live availability (`command -v` on the
+  // server, not the Dockerfile's intent). Fetched once: the answer changes only when the image
+  // does, and the crew rail needs it to grey out an agent you cannot start.
+  const [agents, setAgents] = useState([]);
   const sendersRef = useRef({});
+  // A session created seconds ago, waiting for its terminal to say its first word so the agent
+  // can be launched into it. Held in a ref because the signal arrives from a websocket callback
+  // registered once, which would close over stale state.
+  const pendingWakeRef = useRef(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -83,6 +92,11 @@ export default function App() {
       /* not critical */
     }
   }, [theme]);
+
+  useEffect(() => {
+    if (!authed) return;
+    listAgents().then((r) => setAgents(r.agents || [])).catch(() => {});
+  }, [authed]);
 
   const refreshProjects = useCallback(async () => {
     const { projects: list } = await listProjects();
@@ -135,6 +149,16 @@ export default function App() {
 
   const noteActivity = useCallback((session) => {
     activityRef.current = { ...activityRef.current, [session]: Date.now() };
+    // First output from a just-created session's shell is its prompt, which is the real "ready to
+    // take a command" signal -- better than a timer, which would either fire into a shell that
+    // isn't reading yet or wait longer than it needs to.
+    const pending = pendingWakeRef.current;
+    if (pending && pending.record.name === session) {
+      pendingWakeRef.current = null;
+      clearTimeout(pending.timer);
+      runWake(pending.project, pending.record);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Polled slowly and only while signed in: this reads transcript files on the server, so asking
@@ -198,6 +222,9 @@ export default function App() {
 
   const activeSession = activeProject ? activeSessionByProject[activeProject] || null : null;
   const activeRecord = crewOfProject.find((s) => s.name === activeSession) || null;
+  // The project's own agent choice, made when it was created. It is the default a new crew member
+  // inherits, and the fallback for anything not tied to a particular session.
+  const projectAgent = projects.find((p) => p.name === activeProject)?.agent || 'claude';
 
   // Types a real command into the live terminal, which is the same path a keystroke takes. Kept
   // this way on purpose: what runs is always something the person could have typed and can see.
@@ -205,11 +232,31 @@ export default function App() {
     sendersRef.current[termKey(activeProject, session)]?.(`${command}\r`);
   }
 
-  async function wake({ fork = false } = {}) {
-    if (!activeRecord) return;
-    const { command } = await sessionLaunchCommand(activeProject, activeRecord.id, { fork });
-    typeInto(activeSession, command);
+  // Typed into that session's own terminal, exactly as a person would. The command itself comes
+  // from the server, which picks start-vs-resume by looking at whether the transcript really
+  // exists, and for a non-Claude agent returns that tool's own plain launch command instead.
+  async function runWake(project, record, { fork = false } = {}) {
+    if (!record) return;
+    const { command } = await sessionLaunchCommand(project, record.id, { fork });
+    sendersRef.current[termKey(project, record.name)]?.(`${command}\r`);
     setCrewVersion((v) => v + 1);
+  }
+
+  function wake(opts) {
+    return runWake(activeProject, activeRecord, opts);
+  }
+
+  // Pressing + used to leave you at a bash prompt with an asleep face and nothing saying the
+  // agent had not started. Now the agent you picked is launched for you, through the same visible
+  // typed-command path, as soon as its shell is ready.
+  function autoWake(session) {
+    const timer = setTimeout(() => {
+      // Abandoned rather than fired late: if a shell took this long, you have probably started
+      // typing in it yourself, and injecting a command underneath that would be worse than
+      // leaving you to press Wake.
+      pendingWakeRef.current = null;
+    }, 8000);
+    pendingWakeRef.current = { project: session.project || activeProject, record: session, timer };
   }
 
   async function removeActive() {
@@ -239,7 +286,15 @@ export default function App() {
   const commands = useMemo(() => {
     const list = [];
     if (activeRecord) {
-      list.push({ id: 'wake', label: `Wake ${activeRecord.name}`, hint: 'start or resume', keywords: 'run start resume claude', run: () => wake() });
+      list.push({
+        id: 'wake',
+        label: `Wake ${activeRecord.name}`,
+        // Naming the CLI matters once a project's crew can mix them: "resume" means something
+        // different per tool, and for Codex and DeepCode it means nothing at a launch flag at all.
+        hint: (activeRecord.agent || 'claude') === 'claude' ? 'start or resume' : `start ${activeRecord.agent}`,
+        keywords: 'run start resume claude agent',
+        run: () => wake(),
+      });
       if (activeRecord.hasHistory)
         list.push({
           id: 'fork',
@@ -281,14 +336,17 @@ export default function App() {
 
     // The agent's own login command, typed into the live terminal. This is what the old guided
     // AgentBar existed for; it survives as one palette entry instead of a permanent bar.
-    const projectAgent = projects.find((p) => p.name === activeProject)?.agent || 'claude';
-    if (activeProject && LOGIN_CMD[projectAgent])
+    //
+    // Keyed on the *session's* agent, not the project's: a project's crew can mix agents now, so
+    // the account you need to be signed in to is whichever CLI is about to run in this window.
+    const signInTo = activeRecord?.agent || projectAgent;
+    if (activeProject && LOGIN_CMD[signInTo])
       list.push({
         id: 'agent-login',
-        label: `Sign in to ${projectAgent}`,
-        hint: LOGIN_CMD[projectAgent],
+        label: `Sign in to ${signInTo}`,
+        hint: LOGIN_CMD[signInTo],
         keywords: 'auth login api key account',
-        run: () => typeInto(activeSession, LOGIN_CMD[projectAgent]),
+        run: () => typeInto(activeSession, LOGIN_CMD[signInTo]),
       });
 
     if (activeProject) list.push({ id: 'tools', label: 'MCP, skills, lessons, templates', keywords: 'config extend', run: () => setToolsOpen(true) });
@@ -302,7 +360,7 @@ export default function App() {
     list.push({ id: 'signout', label: 'Sign out', keywords: 'logout leave', run: handleLogout });
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeRecord, crewOfProject, activeSession, projects, activeProject, role, theme, focus, awake]);
+  }, [activeRecord, crewOfProject, activeSession, projects, activeProject, projectAgent, role, theme, focus, awake]);
 
   if (authed === null) return <div className="boot-screen" />;
   if (!authed)
@@ -353,6 +411,9 @@ export default function App() {
               awake={awake}
               refreshKey={crewVersion}
               onSessionsChange={setCrewOfProject}
+              agents={agents}
+              defaultAgent={projectAgent}
+              onCreated={autoWake}
             />
           )}
 
@@ -400,7 +461,13 @@ export default function App() {
 
         {activeProject && (
           <div className="status">
-            <span className="status-who">{focus ? '' : who}</span>
+            <span className="status-who">
+              {focus ? '' : who}
+              {/* Which CLI is actually running here. Shown for every named session rather than
+                  only the unusual ones: with mixed crews the answer is not guessable from the
+                  project, and this is the one line you look at while working inside it. */}
+              {!focus && activeRecord && <span className="status-agent">{activeRecord.agent || 'claude'}</span>}
+            </span>
             <span className={`status-state ${state === 'working' ? 'status-live' : ''}`}>
               {focus ? '' : state}
               {!focus && projectUsage?.tracked && <span className="status-tokens">{formatTokens(projectUsage.totalTokens)} tokens</span>}

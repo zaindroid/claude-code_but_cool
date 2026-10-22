@@ -259,7 +259,10 @@ button { cursor: pointer; }
   color: var(--text-faint);
   min-height: 18px;
 }
-.status-who { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-who { display: flex; align-items: baseline; gap: 9px; min-width: 0; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The CLI running in this window. Quieter than the session's own name, because the name is what
+   you address and this is only what it happens to be made of. */
+.status-agent { color: var(--text-faint); font-size: 10.5px; letter-spacing: 0.02em; flex: 0 0 auto; }
 .status-state { display: inline-flex; align-items: center; gap: 6px; }
 .status-live { color: var(--live); }
 .status-hint { border: none; background: transparent; color: var(--text-faint); font: inherit; padding: 0; }
@@ -932,6 +935,66 @@ button { cursor: pointer; }
   outline: none;
 }
 .crew-rename input { width: 96px; }
+
+/* Which agent CLI a new face will run.
+   Absolutely positioned, deliberately: this appears and disappears as the naming form opens and
+   closes, and the strip sits directly above the terminal -- anything here that changed the
+   strip's height would resize the terminal under it, which is the exact path the layout-shift
+   fix closed. Out of flow, it cannot. */
+.crew-add-form { position: relative; }
+.crew-agent-pick {
+  position: absolute;
+  top: calc(100% + 9px);
+  left: 0;
+  z-index: 40;
+  width: max-content;
+  max-width: 44ch;
+  padding: 9px 10px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  box-shadow: 0 14px 34px rgb(0 0 0 / 0.34);
+}
+.crew-agent-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.crew-agent-chip {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11.5px;
+  white-space: nowrap;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+.crew-agent-chip:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.crew-agent-chip.is-on { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+/* Not installed in this container -- struck through rather than merely dimmed, so it reads as
+   "unavailable" instead of "not selected". */
+.crew-agent-chip:disabled { opacity: 0.45; text-decoration: line-through; cursor: not-allowed; }
+.crew-agent-note {
+  margin: 7px 2px 0;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  line-height: 1.45;
+  max-width: 40ch;
+}
+
+/* The two-letter agent mark on a face, shown only when a project's crew mixes CLIs. Absolute,
+   like the status dot, so turning it on never moves a face or the rail. */
+.crew-agent-mark {
+  position: absolute;
+  left: 6px;
+  top: 27px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+  font-size: 8.5px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+}
 
 /* Errors here are a short sentence explaining a rule, not a stack trace, so they read as a chip
    next to the thing that produced them. Click dismisses. */
