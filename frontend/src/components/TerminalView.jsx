@@ -30,7 +30,11 @@ export default function TerminalView({ project, session = null, active, register
 
   useEffect(() => {
     const term = new Terminal({
-      fontFamily: '"JetBrains Mono", ui-monospace, Menlo, Consolas, monospace',
+      // The same stack as the rest of the app (styles.css's --font). JetBrains Mono used to lead
+      // this list and never once loaded: it was linked from Google Fonts while the CSP blocked
+      // both the stylesheet and the files, so every terminal has always rendered in the fallback.
+      // Naming the fallback is what the terminal actually uses.
+      fontFamily: 'ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas, monospace',
       fontSize: 13.5,
       lineHeight: 1.4,
       cursorBlink: true,
@@ -60,33 +64,89 @@ export default function TerminalView({ project, session = null, active, register
     termRef.current = term;
     fitRef.current = fit;
 
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const params = new URLSearchParams({ project, cols: String(term.cols), rows: String(term.rows) });
-    if (session) params.set('session', session);
-    else params.set('sessionId', sessionIdRef.current);
-    const ws = new WebSocket(`${proto}://${window.location.host}/ws/terminal?${params.toString()}`);
-    wsRef.current = ws;
+    // One socket, re-established on its own when it drops.
+    //
+    // Without this, a terminal that lost its connection -- a laptop sleeping, a network blip, or a
+    // redeploy replacing the container -- printed "[disconnected]" and then sat there dead until
+    // someone thought to reload the page, with nothing on screen suggesting that was the fix. Two
+    // deploys in one afternoon left every open terminal in exactly that state, which is how this
+    // got noticed.
+    //
+    // Two kinds of close are deliberately told apart. The server going away is not the person's
+    // decision, so it heals itself. Their own shell exiting *is* their decision, so it waits to be
+    // asked rather than quietly spawning another shell underneath them.
+    let socket = null;
+    let disposed = false; // the component unmounted -- stop everything, reconnect nothing
+    let exited = false; // the shell itself ended, so a close here was expected
+    let attempt = 0;
+    let retryTimer = null;
 
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.type === 'data') {
-        term.write(msg.data);
-        // The crew rail's "working" face is driven from here -- real output from the real PTY, so
-        // a face only looks busy when its agent genuinely just said something. Nothing polls and
-        // nothing guesses; a session with no output is honestly shown as resting.
-        if (session && onActivity) onActivity(session);
-      } else if (msg.type === 'exit') term.write(`\r\n\x1b[2m[process exited]\x1b[0m\r\n`);
+    const send = (payload) => {
+      if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
     };
-    ws.onclose = () => term.write('\r\n\x1b[2m[disconnected]\x1b[0m\r\n');
+    const dim = (text) => `\r\n\x1b[2m${text}\x1b[0m\r\n`;
+
+    function connect({ replacing = false } = {}) {
+      // Rebuilt per attempt rather than once: the pane may have been resized while the socket was
+      // down, and the server sizes the PTY from these.
+      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const params = new URLSearchParams({ project, cols: String(term.cols), rows: String(term.rows) });
+      if (session) params.set('session', session);
+      else params.set('sessionId', sessionIdRef.current);
+      socket = new WebSocket(`${proto}://${window.location.host}/ws/terminal?${params.toString()}`);
+      wsRef.current = socket;
+
+      socket.onopen = () => {
+        attempt = 0;
+        // A terminal replays its recent output to every attaching viewer (pty.js), which is what
+        // makes reattaching show live state instead of an empty pane. On a *re*connect that same
+        // replay would land underneath the copy already on screen and double the scrollback, so
+        // clearing first makes the repaint authoritative rather than additive.
+        if (replacing) term.reset();
+      };
+
+      socket.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'data') {
+          term.write(msg.data);
+          // The crew rail's "working" face is driven from here -- real output from the real PTY, so
+          // a face only looks busy when its agent genuinely just said something. Nothing polls and
+          // nothing guesses; a session with no output is honestly shown as resting.
+          if (session && onActivity) onActivity(session);
+        } else if (msg.type === 'exit') {
+          exited = true;
+          term.write(dim('[process exited — press any key for a new shell]'));
+        }
+      };
+
+      socket.onclose = () => {
+        if (disposed || exited) return;
+        attempt += 1;
+        // Capped, so a long outage settles into a steady retry instead of drifting out to minutes.
+        // A redeploy is back well inside a minute, which this rides out untouched.
+        const delay = Math.min(500 * 2 ** (attempt - 1), 8000);
+        term.write(dim(attempt === 1 ? '[disconnected — reconnecting…]' : `[still reconnecting… attempt ${attempt}]`));
+        retryTimer = setTimeout(() => connect({ replacing: true }), delay);
+      };
+    }
+
+    connect();
 
     if (registerSender) {
-      registerSender(termKey, (data) => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data }));
-      });
+      // Goes through send(), which reads whichever socket is current, rather than capturing this
+      // one -- otherwise every palette button would go silent after the first reconnect.
+      registerSender(termKey, (data) => send({ type: 'input', data }));
     }
 
     const onData = term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data }));
+      // The keypress that revives a shell you ended yourself. Swallowed rather than forwarded,
+      // because there is nothing on the other end to receive it yet.
+      if (exited) {
+        exited = false;
+        connect({ replacing: true });
+        return;
+      }
+      send({ type: 'input', data });
     });
 
     // Debounced, and a no-op when the fit didn't actually change the character grid -- both
@@ -105,7 +165,7 @@ export default function TerminalView({ project, session = null, active, register
       const grid = `${term.cols}x${term.rows}`;
       if (grid === lastGrid) return;
       lastGrid = grid;
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      send({ type: 'resize', cols: term.cols, rows: term.rows });
     };
     const observer = new ResizeObserver(() => {
       if (resizeTimer) clearTimeout(resizeTimer);
@@ -114,10 +174,14 @@ export default function TerminalView({ project, session = null, active, register
     observer.observe(containerRef.current);
 
     return () => {
+      // Set first: closing the socket below fires onclose, which would otherwise schedule a
+      // reconnect for a terminal that no longer exists.
+      disposed = true;
+      if (retryTimer) clearTimeout(retryTimer);
       if (resizeTimer) clearTimeout(resizeTimer);
       observer.disconnect();
       onData.dispose();
-      ws.close();
+      socket?.close();
       term.dispose();
       if (registerSender) registerSender(termKey, null);
     };
