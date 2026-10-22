@@ -470,8 +470,19 @@ export default function App() {
             </span>
             <span className={`status-state ${state === 'working' ? 'status-live' : ''}`}>
               {focus ? '' : state}
-              {!focus && projectUsage?.tracked && <span className="status-tokens">{formatTokens(projectUsage.totalTokens)} tokens</span>}
-              {!focus && projectUsage && !projectUsage.tracked && <span className="status-tokens">usage not tracked for {projectUsage.agent}</span>}
+              {/* A real count, and honest about its edges. Claude Code is the only one of the four
+                  whose transcripts Codez parses, so in a project with a mixed crew the number is
+                  true but partial -- it says which agents it leaves out rather than letting the
+                  figure read as the whole bill. */}
+              {!focus && projectUsage?.tracked && (
+                <span className="status-tokens">
+                  {formatTokens(projectUsage.totalTokens)} tokens
+                  {projectUsage.untracked?.length ? ` · ${projectUsage.untracked.join(', ')} not counted` : ''}
+                </span>
+              )}
+              {!focus && projectUsage && !projectUsage.tracked && (
+                <span className="status-tokens">usage not tracked for {(projectUsage.untracked || [projectUsage.agent]).join(', ')}</span>
+              )}
             </span>
             <button
               type="button"

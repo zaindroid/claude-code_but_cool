@@ -494,7 +494,18 @@ app.post('/api/templates', (req, res) => {
 // The token-usage HUD -- one call, every open project's real usage (Claude Code only tracked for
 // real right now, see tokenUsage.js), so the frontend can poll one endpoint instead of one per tab.
 app.get('/api/usage/tokens', (req, res) => {
-  const projects = listProjects(req.user).map((p) => ({ name: p.name, dir: projectPath(req.user, p.name), agent: p.agent }));
+  const projects = listProjects(req.user).map((p) => {
+    const dir = projectPath(req.user, p.name);
+    return {
+      name: p.name,
+      dir,
+      agent: p.agent,
+      // The crew's agents, not just the project's: a project declared as one agent can hold
+      // sessions running another, and whether any Claude transcript exists for it is what decides
+      // if there is a real number to report. See getUsageForProjects.
+      sessionAgents: (listSessions(req.user, p.name) || []).map((s) => s.agent),
+    };
+  });
   res.json({ usage: getUsageForProjects(req.user, projects) });
 });
 app.get('/api/files', (req, res) => {

@@ -7,7 +7,9 @@
 //
 // The other three agents (OpenCode, Codex, DeepCode) are not wired up here yet -- their own local
 // storage formats weren't verified live in this session, and a guessed parser would silently show
-// a wrong number, which is worse than honestly showing "not tracked yet". See getUsageForProject.
+// a wrong number, which is worse than honestly showing "not tracked yet". A project's crew can mix
+// CLIs, so "tracked" is per *agent present in the project*, not per project -- see
+// getUsageForProjects.
 import fs from 'node:fs';
 import path from 'node:path';
 import { sanitizedClaudeSessionDir } from './agents.js';
@@ -62,11 +64,25 @@ function estimateCost(t) {
   );
 }
 
-// projects: [{name, dir, agent}]
+// projects: [{name, dir, agent, sessionAgents}]
+//
+// Trackability is decided by every agent actually present in the project -- its declared one plus
+// whatever its named crew members run -- not by the project's own agent alone. That used to be the
+// gate, and once a project's crew could mix CLIs it was wrong in both directions, as a live
+// account showed immediately: a project created as `deepcode` held three Claude sessions, so it
+// reported "not tracked" while real Claude transcripts for it sat on disk being ignored.
+//
+// Summing is safe either way -- the transcript directory is keyed on the project's path, so it
+// holds whatever Claude ran there and nothing else. The only real question is whether the number
+// is *complete*, so the untracked agents are named rather than silently rounded away: a project
+// mixing Claude and OpenCode has a true Claude total and an unknown OpenCode one, and saying so is
+// the honest version of both.
 export function getUsageForProjects(user, projects) {
-  return projects.map(({ name, dir, agent }) => {
-    if (agent !== 'claude') {
-      return { project: name, agent, tracked: false };
+  return projects.map(({ name, dir, agent, sessionAgents = [] }) => {
+    const present = new Set([agent, ...sessionAgents].filter(Boolean));
+    const untracked = [...present].filter((a) => a !== 'claude').sort();
+    if (!present.has('claude')) {
+      return { project: name, agent, tracked: false, untracked };
     }
     const totals = sumClaudeUsage(sanitizedClaudeSessionDir(user.homeDir, dir));
     const totalTokens = totals.inputTokens + totals.outputTokens + totals.cacheCreationTokens + totals.cacheReadTokens;
@@ -74,6 +90,9 @@ export function getUsageForProjects(user, projects) {
       project: name,
       agent,
       tracked: true,
+      // Non-empty means the total above is real but partial: these agents ran here too and their
+      // usage is not counted. The UI says so rather than presenting the figure as the whole bill.
+      untracked,
       ...totals,
       totalTokens,
       estimatedCostUsd: Math.round(estimateCost(totals) * 10000) / 10000,

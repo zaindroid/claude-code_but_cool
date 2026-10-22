@@ -56,15 +56,22 @@ export default function CrewRail({
     };
   }, [project, refreshKey]);
 
+  // What a new face runs unless you say otherwise: whatever the last one you added to this project
+  // runs. "Same as last time" is the most learnable default and self-corrects after one deliberate
+  // choice, so a crew stays coherent without anyone maintaining a setting.
+  //
+  // The project's own declared agent is only the fallback for an empty crew -- live-checked
+  // against a real account, where a project created as `deepcode` had three Claude sessions in it,
+  // so inheriting the project would have quietly offered DeepCode and lost name-addressing with
+  // it. The sessions file is append-ordered, so the last entry is the most recent.
+  const inheritedAgent = sessions.length ? sessions[sessions.length - 1].agent || defaultAgent : defaultAgent;
+
   useEffect(() => {
     if (adding) {
-      // The project was created with an agent chosen; inherit it rather than assuming Claude, so
-      // the common case is zero extra decisions and the picker is only there when you want to
-      // deviate from it.
-      setDraftAgent(defaultAgent);
+      setDraftAgent(inheritedAgent);
       addRef.current?.focus();
     }
-  }, [adding, defaultAgent]);
+  }, [adding, inheritedAgent]);
 
   // Which pose each face wears. `activity` is the real signal -- a timestamp set whenever that
   // session's PTY actually emits output -- so "working" means the agent genuinely just said
