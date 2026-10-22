@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 
 // One real PTY per terminal, kept alive across a tab switch (Terminal vs Preview) by the parent
@@ -19,6 +20,10 @@ export default function TerminalView({ project, session = null, active, register
   const termRef = useRef(null);
   const wsRef = useRef(null);
   const fitRef = useRef(null);
+  // Disposes the GPU renderer on unmount. A WebGL context is a real, limited resource -- browsers
+  // cap how many a page may hold -- so leaking one per terminal you ever opened would eventually
+  // drop every terminal back to the slow renderer.
+  const webglRef = useRef(null);
   // Only used for anonymous terminals. Random per mount on purpose -- an anonymous terminal is
   // meant to end with its tab, which is exactly what an unstable key gives you. A named session
   // keys on its name instead, server-side, which is what makes it outlive the tab.
@@ -29,6 +34,18 @@ export default function TerminalView({ project, session = null, active, register
   const termKey = session ? `${project}::${session}` : project;
 
   useEffect(() => {
+    // The GPU renderer draws onto an opaque canvas, so the terminal needs a real background
+    // colour rather than the `transparent` the DOM renderer let it get away with. Read off the
+    // page instead of hardcoded, so it is whatever the surface behind the terminal actually is
+    // and the light theme does not end up with a black screen.
+    const surfaceColor = () => {
+      for (let el = containerRef.current; el; el = el.parentElement) {
+        const bg = getComputedStyle(el).backgroundColor;
+        if (bg && !/rgba\(0,\s*0,\s*0,\s*0\)|transparent/.test(bg)) return bg;
+      }
+      return '#0b0d13';
+    };
+
     const term = new Terminal({
       // The same stack as the rest of the app (styles.css's --font). JetBrains Mono used to lead
       // this list and never once loaded: it was linked from Google Fonts while the CSP blocked
@@ -40,7 +57,7 @@ export default function TerminalView({ project, session = null, active, register
       cursorBlink: true,
       cursorStyle: 'block',
       theme: {
-        background: 'transparent',
+        background: surfaceColor(),
         foreground: '#e8e4d9',
         cursor: '#c96442',
         cursorAccent: '#1a1815',
@@ -60,6 +77,44 @@ export default function TerminalView({ project, session = null, active, register
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     term.open(containerRef.current);
+
+    // Draw on the GPU instead of building the screen out of DOM nodes.
+    //
+    // xterm's default renderer makes a <span> per styled run and reflows the lot on every frame.
+    // For a shell printing a line at a time that is fine, and it is why nobody noticed; for a
+    // full-screen TUI like Claude Code, which repaints its whole frame on every token, it is the
+    // single thing making the terminal feel slow. It also scales with how many terminals are
+    // open, because every mounted one keeps rendering whether or not you are looking at it.
+    //
+    // Loaded after open() because the addon needs a real canvas to attach to, and guarded because
+    // WebGL is not guaranteed: a blocklisted driver, a software-rendering VM or too many live GL
+    // contexts all make it throw, and losing the context later is normal on a laptop waking up.
+    // Either way the DOM renderer is still there underneath, so the failure mode is "as slow as
+    // it used to be", never a blank terminal.
+    let webgl = null;
+    try {
+      webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        try { webgl.dispose(); } catch { /* already gone */ }
+        webgl = null;
+      });
+      term.loadAddon(webgl);
+    } catch {
+      webgl = null;
+    }
+    webglRef.current = () => {
+      try { webgl?.dispose(); } catch { /* already gone */ }
+      webgl = null;
+    };
+
+    // The background is now a fixed colour rather than a hole onto the page, so it has to be told
+    // when the page's colour changes. Watching the one attribute the toggle actually sets is
+    // cheaper and more honest than polling, and it fires once per toggle.
+    const themeWatch = new MutationObserver(() => {
+      term.options.theme = { ...term.options.theme, background: surfaceColor() };
+    });
+    themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
     fit.fit();
     termRef.current = term;
     fitRef.current = fit;
@@ -299,6 +354,9 @@ export default function TerminalView({ project, session = null, active, register
       observer.disconnect();
       onData.dispose();
       socket?.close();
+      themeWatch.disconnect();
+      webglRef.current?.();
+      webglRef.current = null;
       term.dispose();
       if (registerSender) registerSender(termKey, null);
     };
