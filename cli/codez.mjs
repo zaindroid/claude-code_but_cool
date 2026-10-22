@@ -208,14 +208,26 @@ async function decideTranscript(cfg, project, name, local) {
   const m = Math.min(localLines.length, remoteLines);
 
   if (m > 0) {
-    const atPrefix = await api(
-      cfg,
-      'GET',
-      `/${encodeURIComponent(project)}/${encodeURIComponent(name)}/state?prefix=${m}`
-    );
-    const localPrefixSha = sha(localLines.slice(0, m).join('\n'));
-    if (atPrefix.transcript.prefixSha !== localPrefixSha) {
-      return { action: 'diverged', localLines, remoteLines, at: m };
+    const prefixShaAt = async (k) =>
+      (await api(cfg, 'GET', `/${encodeURIComponent(project)}/${encodeURIComponent(name)}/state?prefix=${k}`)).transcript.prefixSha;
+    const agreesAt = async (k) => k === 0 || (await prefixShaAt(k)) === sha(localLines.slice(0, k).join('\n'));
+
+    if (!(await agreesAt(m))) {
+      // Binary search for where the two histories actually part company.
+      //
+      // Worth the extra round trips (log2 of the transcript length -- a dozen or so even for a
+      // very long session) because the alternative is lying to the user at the exact moment they
+      // most need the truth. Reporting the comparison length `m` as the agreement point is wrong
+      // by construction: `m` is where the check FAILED. Telling someone "you share the first 400
+      // lines" when the histories split at line 12 would send them merging the wrong thing.
+      let lo = 0; // known to agree
+      let hi = m; // known to disagree
+      while (hi - lo > 1) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (await agreesAt(mid)) lo = mid;
+        else hi = mid;
+      }
+      return { action: 'diverged', localLines, remoteLines, commonPrefix: lo };
     }
   }
 
@@ -255,7 +267,7 @@ async function pullTranscript(cfg, project, name, local, fromLine) {
   // Appended, never rewritten -- the same guarantee the server side gives. If this file is
   // mid-write by a running `claude`, appending is still safe where truncating would not be.
   fs.appendFileSync(local.file, res.lines.join('\n') + '\n', 'utf8');
-  console.log(`  ${c.dim(`transcript ← ${res.lines.length} lines`)}`);
+  console.log(`  ${c.dim(`transcript ← ${res.lines.length} line${res.lines.length === 1 ? '' : 's'}`)}`);
   return { appended: res.lines.length };
 }
 
@@ -264,14 +276,31 @@ function localShas(cwd) {
   return r.ok ? r.out.trim().split('\n').filter(Boolean) : [];
 }
 
-function ensureLocalRepo(cwd) {
+// `initialCommit: false` is what the receiving side wants, and the distinction is load-bearing
+// rather than tidy. Giving a fresh directory a root commit of its own makes the history about to
+// arrive *unrelated* to it, so the incoming commits land in refs/teleport/* and the working tree
+// stays empty -- which looks exactly like the files failing to transfer. With no commits at all
+// there is nothing to diverge from, so the arriving branch is simply checked out.
+//
+// Live-caught 2026-10-22: the same mistake existed on the server and was fixed there first, and
+// `codez down` into an empty folder still produced a .git and no files until this matched.
+function ensureLocalRepo(cwd, { initialCommit = true } = {}) {
   if (gitQuiet(['rev-parse', '--is-inside-work-tree'], cwd).ok) return false;
   console.log(`  ${c.yellow('!')} ${cwd} is not a git repo — initialising one so the workspace can sync safely.`);
   git(['init', '-q'], cwd);
+  if (!initialCommit) return true;
   git(['add', '-A'], cwd);
   const r = gitQuiet(['commit', '-q', '-m', 'codez: initial commit before first teleport', '--allow-empty'], cwd);
   if (!r.ok) console.log(`  ${c.dim('(nothing to commit yet — that is fine)')}`);
   return true;
+}
+
+// Bytes until it is genuinely worth calling kilobytes. `Math.round(470/1024)` is 0, so a real
+// 470-byte bundle reported itself as "0KB" and read as nothing having been sent at all.
+function size(bytes) {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
 async function pushWorkspace(cfg, project, name, cwd, remoteRefs) {
@@ -291,15 +320,15 @@ async function pushWorkspace(cfg, project, name, cwd, remoteRefs) {
   const data = fs.readFileSync(bundle);
   fs.rmSync(bundle, { force: true });
   const res = await api(cfg, 'POST', `/${encodeURIComponent(project)}/${encodeURIComponent(name)}/bundle`, { body: data });
-  const kb = Math.round(data.length / 1024);
-  console.log(`  ${c.dim(`workspace → ${kb}KB`)}`);
+  console.log(`  ${c.dim(`workspace → ${size(data.length)}`)}`);
   if (res?.fastForward?.moved) console.log(`  ${c.dim('remote working tree fast-forwarded')}`);
   else if (res?.fastForward?.diverged) console.log(`  ${c.yellow('!')} remote workspace has diverged — your commits are in refs/teleport/* there, waiting for a real merge`);
   else if (res?.fastForward?.reason) console.log(`  ${c.dim(`remote not fast-forwarded: ${res.fastForward.reason}`)}`);
 }
 
 async function pullWorkspace(cfg, project, name, cwd) {
-  ensureLocalRepo(cwd);
+  // Receiving: no initial commit, or the arriving history can never be related to this one.
+  ensureLocalRepo(cwd, { initialCommit: false });
   const have = localShas(cwd).join(',');
   const data = await api(cfg, 'GET', `/${encodeURIComponent(project)}/${encodeURIComponent(name)}/bundle?have=${have}`, { raw: true });
   if (!data) {
@@ -313,7 +342,7 @@ async function pullWorkspace(cfg, project, name, cwd) {
     // branch you are standing on or touch your working tree. You merge when you choose to.
     const r = gitQuiet(['fetch', '-q', bundle, 'refs/heads/*:refs/teleport/*', '--force'], cwd);
     if (!r.ok) die(`git fetch from bundle failed: ${r.out.trim()}`);
-    console.log(`  ${c.dim(`workspace ← ${Math.round(data.length / 1024)}KB into refs/teleport/*`)}`);
+    console.log(`  ${c.dim(`workspace ← ${size(data.length)} into refs/teleport/*`)}`);
 
     // Whichever branch actually arrived, not an assumed `main`. The server's default branch is
     // whatever git chose there, so hardcoding one name made a bundle from a `master` repo always
@@ -397,7 +426,8 @@ async function cmdUp(args) {
 
   const decision = await decideTranscript(cfg, project, name, local);
   if (decision.action === 'diverged') {
-    console.log(`\n${c.yellow('!')} ${c.bold('Diverged.')} This session advanced both here and on Codez (they agree for the first ${decision.at} lines).`);
+    console.log(`\n${c.yellow('!')} ${c.bold('Diverged.')} This session advanced both here and on Codez.`);
+    console.log(`  They share the first ${decision.commonPrefix} line(s), and differ from line ${decision.commonPrefix + 1} on.`);
     console.log(`  Local has ${decision.localLines.length} lines, Codez has ${decision.remoteLines}.`);
     console.log(`  Neither is being overwritten. To continue the Codez copy as a separate session, open it there and press Fork,`);
     console.log(`  or run: ${c.cyan(`claude --resume ${local.id} --fork-session`)} here.`);
@@ -435,7 +465,8 @@ async function cmdDown(args) {
 
   const decision = await decideTranscript(cfg, project, name, local);
   if (decision.action === 'diverged') {
-    console.log(`\n${c.yellow('!')} ${c.bold('Diverged.')} Both copies advanced (they agree for the first ${decision.at} lines). Nothing overwritten.`);
+    console.log(`\n${c.yellow('!')} ${c.bold('Diverged.')} Both copies advanced. Nothing overwritten.`);
+    console.log(`  They share the first ${decision.commonPrefix} line(s), and differ from line ${decision.commonPrefix + 1} on.`);
     console.log(`  Run ${c.cyan(`claude --resume ${remote.claudeSessionId} --fork-session`)} to continue one as a new session.`);
     process.exit(2);
   }

@@ -127,6 +127,12 @@ A face shows what its agent is actually doing. "Working" is driven by real outpu
 that session's PTY, not by a timer — so a face is busy only when its agent genuinely just said
 something.
 
+One limit worth knowing: a named session survives a page reload, a dropped connection and a closed
+laptop, but **not a redeploy of Codez itself**. The shell is a process inside the container, so
+deploying a new version kills every running shell. The conversation is untouched — transcripts
+live on the persistent volume — so every session can be picked straight back up with Wake, which
+resumes rather than restarts.
+
 Codez generates the session uuid itself and passes `--session-id`, which is what makes everything
 else exact: the transcript lands at a path Codez can predict rather than discover, so resuming is
 `claude --resume <uuid>` and forking is `--fork-session`, both Claude Code's own flags.
