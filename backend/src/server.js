@@ -345,7 +345,21 @@ app.get('/api/sessions', (req, res) => {
 app.get('/api/projects/:project/sessions', (req, res) => {
   const dir = requireProjectDir(req, res);
   if (!dir) return;
-  res.json({ sessions: listSessions(req.user, req.params.project) });
+  // Carries the same three live facts as the account-wide route above. It used to return the bare
+  // records, which is the list the crew rail actually renders -- so the rail had no way to know a
+  // session had history and its Resume button would have offered to "Start" a conversation that
+  // already existed. The command the server hands back was always the right one; the label was
+  // the thing that would have lied.
+  const awake = liveSessionNames(req.user);
+  const running = busySessionNames(req.user);
+  res.json({
+    sessions: listSessions(req.user, req.params.project).map((s) => ({
+      ...s,
+      hasHistory: hasTranscript(req.user, dir, s),
+      awake: awake.has(s.name),
+      running: running.has(s.name),
+    })),
+  });
 });
 
 app.post('/api/projects/:project/sessions', (req, res) => {
