@@ -64,7 +64,7 @@ function estimateCost(t) {
   );
 }
 
-// projects: [{name, dir, agent, sessionAgents}]
+// projects: [{name, dir, agent, sessionAgents, sessionDirs}]
 //
 // Trackability is decided by every agent actually present in the project -- its declared one plus
 // whatever its named crew members run -- not by the project's own agent alone. That used to be the
@@ -78,13 +78,27 @@ function estimateCost(t) {
 // mixing Claude and OpenCode has a true Claude total and an unknown OpenCode one, and saying so is
 // the honest version of both.
 export function getUsageForProjects(user, projects) {
-  return projects.map(({ name, dir, agent, sessionAgents = [] }) => {
+  return projects.map(({ name, dir, agent, sessionAgents = [], sessionDirs = [] }) => {
     const present = new Set([agent, ...sessionAgents].filter(Boolean));
     const untracked = [...present].filter((a) => a !== 'claude').sort();
     if (!present.has('claude')) {
       return { project: name, agent, tracked: false, untracked };
     }
-    const totals = sumClaudeUsage(sanitizedClaudeSessionDir(user.homeDir, dir));
+    // Summed across the project root AND every agent folder in it. Each agent works in its own
+    // directory now, and Claude Code derives its transcript slug from the working directory, so
+    // a project's own slug holds only what ran in the root -- reading that alone would report a
+    // busy crew as zero. Deduped because sessions made before folders existed still work in the
+    // root and would otherwise be counted twice.
+    const roots = [...new Set([dir, ...sessionDirs])].map((d) => sanitizedClaudeSessionDir(user.homeDir, d));
+    const totals = roots.reduce((acc, root) => {
+      const t = sumClaudeUsage(root);
+      return {
+        inputTokens: acc.inputTokens + t.inputTokens,
+        outputTokens: acc.outputTokens + t.outputTokens,
+        cacheCreationTokens: acc.cacheCreationTokens + t.cacheCreationTokens,
+        cacheReadTokens: acc.cacheReadTokens + t.cacheReadTokens,
+      };
+    }, { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 });
     const totalTokens = totals.inputTokens + totals.outputTokens + totals.cacheCreationTokens + totals.cacheReadTokens;
     return {
       project: name,

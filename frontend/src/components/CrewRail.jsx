@@ -260,6 +260,16 @@ export default function CrewRail({
               </button>
             ))}
           </div>
+          {/* Where it will actually work. Worth saying up front rather than leaving you to find
+              out from a prompt: the name you are typing is also a folder name, so this is the
+              one moment where picking a name has a consequence you can still change. */}
+          <p className="crew-agent-note">
+            <span className="crew-agent-where">
+              {project}/{draft.trim().toLowerCase() || 'name'}
+            </span>
+            {' — its own folder, beside the rest of the crew and '}
+            <span className="crew-agent-where">{project}/shared</span>.
+          </p>
           <p className="crew-agent-note">
             {draftAgent === 'claude'
               ? 'Other agents can reach this one by name.'

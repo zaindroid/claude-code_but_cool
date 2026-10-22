@@ -35,6 +35,7 @@ import { getUsageForProjects } from './tokenUsage.js';
 import {
   listAllSessions,
   listSessions,
+  sessionDir,
   createSession,
   updateSession,
   deleteSession,
@@ -523,6 +524,8 @@ app.get('/api/usage/tokens', (req, res) => {
       // sessions running another, and whether any Claude transcript exists for it is what decides
       // if there is a real number to report. See getUsageForProjects.
       sessionAgents: (listSessions(req.user, p.name) || []).map((s) => s.agent),
+      // Each agent's own folder, because that is what its transcript slug is derived from.
+      sessionDirs: (listSessions(req.user, p.name) || []).map((s) => sessionDir(dir, s)),
     };
   });
   res.json({ usage: getUsageForProjects(req.user, projects) });

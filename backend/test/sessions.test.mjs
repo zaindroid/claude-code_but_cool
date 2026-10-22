@@ -7,7 +7,7 @@ import path from 'node:path';
 
 fs.chownSync = () => {}; // no-op: this test is about session records, not ownership
 
-const { createSession, listSessions, listAllSessions, updateSession, deleteSession, findSessionByName, readSessions, launchCommand } =
+const { createSession, listSessions, listAllSessions, updateSession, deleteSession, findSessionByName, readSessions, launchCommand, sessionDir, transcriptPath } =
   await import('file://' + path.resolve('backend/src/sessions.js').replace(/\\/g, '/'));
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codez-sess-'));
@@ -98,8 +98,46 @@ check(
 check('codex launches plainly', launchCommand({ ...oc, agent: 'codex' }, { resume: true }) === 'codex');
 check('deepcode launches plainly', launchCommand({ ...oc, agent: 'deepcode' }, { resume: true }) === 'deepcode');
 
+// --- per-agent folders -----------------------------------------------------------------------
+// Each agent works in its own directory inside the project, so a crew does not share one tree.
+const projAlpha = path.join(user.projectsDir, 'alpha');
+check('creates the agent its own folder', fs.statSync(path.join(projAlpha, 'scout')).isDirectory());
+check('records the folder on the session', a.dir === 'scout', String(a.dir));
+check('sessionDir resolves inside the project', sessionDir(projAlpha, a) === path.join(projAlpha, 'scout'));
+check('creates shared/ alongside it', fs.statSync(path.join(projAlpha, 'shared')).isDirectory());
+check('shared/ explains itself', fs.readFileSync(path.join(projAlpha, 'shared', 'README.md'), 'utf8').includes('../shared'));
+
+// The reason `shared` is reserved: it would otherwise be handed the common folder as its workspace.
+throws('rejects a session named shared', () => createSession(user, 'alpha', { name: 'shared' }), 400);
+
+// Load-bearing: a session with no `dir` predates folders and must keep working in the project
+// root, because its transcript slug was derived from that path and moving it would orphan it.
+check('legacy session falls back to the project root', sessionDir(projAlpha, { name: 'old' }) === projAlpha);
+check('no session at all falls back too', sessionDir(projAlpha, null) === projAlpha);
+
+// The transcript slug has to follow the folder, not the project -- that is the whole reason
+// sessionDir exists rather than pty.js just joining a path.
+const slugOf = (p) => p.replace(/[^a-zA-Z0-9]/g, '-');
+check(
+  'transcript path follows the agent folder',
+  transcriptPath(user, projAlpha, a) === path.join(root, '.claude', 'projects', slugOf(path.join(projAlpha, 'scout')), a.claudeSessionId + '.jsonl'),
+  transcriptPath(user, projAlpha, a)
+);
+check(
+  'a legacy session still resolves to the project slug',
+  transcriptPath(user, projAlpha, { claudeSessionId: 'x' }) === path.join(root, '.claude', 'projects', slugOf(projAlpha), 'x.jsonl')
+);
+
+// Renaming must not move anything on disk: the folder is stored, not derived from the name.
+updateSession(user, 'alpha', a.id, { name: 'scouty' });
+const movedName = findSessionByName(user, 'scouty');
+check('rename leaves the folder where it was', movedName.dir === 'scout', String(movedName.dir));
+check('renamed session still has its folder on disk', fs.existsSync(path.join(projAlpha, 'scout')));
+updateSession(user, 'alpha', a.id, { name: 'scout' });
+
 // delete
 deleteSession(user, 'alpha', a.id);
+check('deleting a session leaves its files alone', fs.existsSync(path.join(projAlpha, 'scout')));
 check('deletes', listSessions(user, 'alpha').length === 0);
 throws('deleting twice 404s', () => deleteSession(user, 'alpha', a.id), 404);
 

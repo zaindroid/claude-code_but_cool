@@ -36,10 +36,31 @@ const NAME_RE = /^[a-z0-9][a-z0-9-]{1,31}$/;
 
 // Reserved because a session named this would make `claude --resume <name>` ambiguous against the
 // CLI's own vocabulary, or make the crew rail read like a status rather than a name.
-const RESERVED = new Set(['new', 'all', 'none', 'idle', 'claude', 'codez', 'admin', 'self', 'me']);
+// `shared` is reserved for a different reason than the rest: each agent now works in a folder
+// named after it inside the project, and `shared/` is the one folder in there that belongs to no
+// agent. A session called `shared` would be handed the common folder as its own workspace.
+const RESERVED = new Set(['new', 'all', 'none', 'idle', 'claude', 'codez', 'admin', 'self', 'me', 'shared']);
 
 export function isValidSessionName(name) {
   return typeof name === 'string' && NAME_RE.test(name) && !RESERVED.has(name);
+}
+
+// The one folder in a project that belongs to no agent. Created alongside the first agent folder
+// rather than at project creation, so projects that never grew a crew are left exactly as they
+// are, and the note inside is there because the folder is otherwise just an empty directory whose
+// purpose you would have to be told.
+function ensureSharedDir(user, projectDir) {
+  const shared = path.join(projectDir, 'shared');
+  if (fs.existsSync(shared)) return;
+  fs.mkdirSync(shared, { recursive: true });
+  chownToUser(shared, user.uid, user.gid);
+  const note = path.join(shared, 'README.md');
+  fs.writeFileSync(
+    note,
+    'Anything in here is meant for the whole crew. Each agent works in its own folder\nnext to this one and can read this one as `../shared`.\n',
+    'utf8'
+  );
+  chownToUser(note, user.uid, user.gid);
 }
 
 function sessionsFile(projectDir) {
@@ -153,10 +174,26 @@ export function createSession(user, project, { name, agent = 'claude', origin = 
     );
   }
 
+  // The agent's own folder, made before the record so a session is never registered pointing at
+  // a directory that does not exist. Root makes it, so it has to be handed to the account
+  // afterwards -- the agent runs as that Linux user and could not write into a root-owned folder
+  // (the same reason writeSessions and createProject chown what they create).
+  const workDir = path.join(dir, name);
+  if (!fs.existsSync(workDir)) {
+    fs.mkdirSync(workDir, { recursive: true });
+    chownToUser(workDir, user.uid, user.gid);
+  }
+  ensureSharedDir(user, dir);
+
   const record = {
     id: `s_${randomUUID().slice(0, 8)}`,
     name,
     agent,
+    // The folder this session works in, relative to the project. Stored rather than derived from
+    // `name` so renaming an agent is still just a rename: the folder keeps its original name and
+    // nothing on disk moves, which matters because the transcript path is derived from the cwd
+    // and a moved folder would orphan the history.
+    dir: name,
     // Generated now, not on first launch, and never regenerated: this is the uuid that goes to
     // `claude --session-id`, so it is also the transcript filename and the handle teleport and
     // `--resume` both key on. A session record without one would be a session Codez cannot find
@@ -222,13 +259,32 @@ export function deleteSession(user, project, id) {
   return { ok: true };
 }
 
+// Where this session actually works.
+//
+// An agent gets its own folder inside the project, named after it, so five agents in one project
+// are five agents in five folders rather than five shells fighting over one tree. They are
+// siblings, not islands: `../shared` is right there, and so is every other agent's folder, which
+// is what keeps "collaborating" a thing you can do by just reading the file next door.
+//
+// `dir` absent means the session predates this and works in the project root. That is load-bearing
+// rather than politeness -- Claude Code derives its transcript directory from the working
+// directory (see sanitizedClaudeSessionDir), so moving an existing session into a subfolder would
+// strand the history it already has. Old sessions stay where their transcripts are.
+export function sessionDir(projectDir, session) {
+  return session?.dir ? path.join(projectDir, session.dir) : projectDir;
+}
+
 // Where Claude Code will actually keep this session's transcript, once it has one.
 //
 // Deterministic precisely because Codez chose the uuid itself (see createSession) -- this is the
 // path teleport writes to on arrival and reads from on sync, and the path whose mere existence
 // tells us whether a session has ever really run.
 export function transcriptPath(user, projectDir, session) {
-  return path.join(sanitizedClaudeSessionDir(user.homeDir, projectDir), `${session.claudeSessionId}.jsonl`);
+  // Keyed on the session's own folder, not the project's: that is the cwd Claude Code will be
+  // launched in, and the slug it derives follows the cwd. Going through sessionDir here fixes
+  // every caller at once -- hasTranscript, the Resume pill's label, and all three of teleport's
+  // reads and writes -- without any of them having to know a session can have a folder.
+  return path.join(sanitizedClaudeSessionDir(user.homeDir, sessionDir(projectDir, session)), `${session.claudeSessionId}.jsonl`);
 }
 
 export function hasTranscript(user, projectDir, session) {

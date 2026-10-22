@@ -977,6 +977,9 @@ button { cursor: pointer; }
 /* Not installed in this container -- struck through rather than merely dimmed, so it reads as
    "unavailable" instead of "not selected". */
 .crew-agent-chip:disabled { opacity: 0.45; text-decoration: line-through; cursor: not-allowed; }
+/* A path inside a sentence. Type here is monospace throughout already, so the only thing that
+   can set it apart is weight and a step up in contrast from the faint note around it. */
+.crew-agent-where { color: var(--text-muted); font-weight: 600; }
 .crew-agent-note {
   margin: 7px 2px 0;
   color: var(--text-faint);

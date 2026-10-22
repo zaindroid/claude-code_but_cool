@@ -13,8 +13,9 @@
 // switching users properly (it calls initgroups() itself) -- used here without the login (`-`)
 // flag, so it does not also reset cwd/environment, which stay under this file's own control.
 import pty from 'node-pty';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { projectPath } from './projects.js';
+import { listSessions, sessionDir } from './sessions.js';
 import { providerEnv } from './settings.js';
 
 // A full path, not a bare command name: `su -s` doesn't do a $PATH lookup the way exec-by-name
@@ -107,11 +108,21 @@ function destroy(key, entry) {
 }
 
 export function attachTerminal(ws, user, { project, session, sessionId, cols, rows }) {
-  const cwd = projectPath(user, project);
-  if (!cwd) {
+  const projectDir = projectPath(user, project);
+  if (!projectDir) {
     ws.close(4004, 'Unknown project');
     return;
   }
+
+  // A named session opens in its own folder; a plain terminal, and any session made before
+  // folders existed, opens in the project root. The existence check is not paranoia: the folder
+  // is on the same disk a user can delete things from through the file browser or the shell
+  // itself, and a cwd that has been removed makes the spawn fail with an errno rather than
+  // anything that reads as "your folder is gone". Falling back to the project keeps the terminal
+  // usable, which is the state someone can actually fix the problem from.
+  const record = session ? (listSessions(user, project) || []).find((s) => s.name === session) : null;
+  const wanted = sessionDir(projectDir, record);
+  const cwd = existsSync(wanted) ? wanted : projectDir;
 
   const key = terminalKey(user, { project, session, sessionId });
   let entry = terminals.get(key);
