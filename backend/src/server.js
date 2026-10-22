@@ -84,6 +84,20 @@ app.use(
     },
   })
 );
+// Every route here reports failures through this rather than `res.status(err.status || 500)`.
+//
+// The guard is not defensive padding -- it fixes a real, shipped bug. Errors from
+// `child_process.execFileSync` carry the process EXIT CODE on `err.status`, so a git command
+// exiting 1 produced `res.status(1)`, which Express rejects with ERR_HTTP_INVALID_STATUS_CODE.
+// The request then failed with a generic 500 and the genuine cause never reached the client or
+// the log. Anything outside the valid HTTP error range is treated as "not an HTTP status".
+function sendError(res, err) {
+  const status = Number.isInteger(err?.status) && err.status >= 400 && err.status <= 599 ? err.status : 500;
+  const body = { error: err?.message || 'Something went wrong' };
+  if (err?.lines !== undefined) body.lines = err.lines;
+  res.status(status).json(body);
+}
+
 // Resolves the `:project/:name` pair every teleport route takes into a real project directory and
 // a real session record, or throws the right 404. A `function` declaration so it is hoisted above
 // the routes that close over it.
@@ -139,7 +153,7 @@ app.post('/api/teleport/arrive', teleportJson, (req, res) => {
       })
     );
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -156,7 +170,7 @@ app.get('/api/teleport/:project/:name/state', (req, res) => {
       transcript: transcriptMeta(req.user, dir, session, req.query.prefix ?? null),
     });
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -174,7 +188,7 @@ app.get('/api/teleport/:project/:name/bundle', (req, res) => {
     res.setHeader('Content-Type', 'application/octet-stream');
     res.send(data);
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -188,7 +202,7 @@ app.post('/api/teleport/:project/:name/bundle', teleportBundle, (req, res) => {
     const ff = tryFastForward(req.user, dir);
     res.json({ ...applied, fastForward: ff });
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -197,7 +211,7 @@ app.get('/api/teleport/:project/:name/transcript', (req, res) => {
     const { dir, session } = teleportTarget(req);
     res.json(readTranscriptFrom(req.user, dir, session, Number(req.query.from) || 0));
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -211,7 +225,7 @@ app.post('/api/teleport/:project/:name/transcript', teleportJson, (req, res) => 
     markSynced(req.user, req.params.project, session.id, result.lines);
     res.json(result);
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message, lines: err.lines });
+    sendError(res, err);
   }
 });
 
@@ -238,7 +252,7 @@ app.post('/api/projects', (req, res) => {
     const templateId = req.body?.templateId ? String(req.body.templateId) : null;
     res.json(createProject(req.user, String(req.body?.name || '').trim(), { agent, templateId }));
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -268,14 +282,14 @@ app.post('/api/tokens', (req, res) => {
     // and not retrievable afterward -- the UI has to tell the user to copy it now.
     res.status(201).json({ token, record });
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 app.delete('/api/tokens/:id', (req, res) => {
   try {
     res.json(revokeToken(req.user, req.params.id));
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -296,7 +310,7 @@ app.put('/api/projects/:project/config', (req, res) => {
     if (typeof req.body?.legendMode === 'boolean') patch.legendMode = req.body.legendMode;
     res.json({ config: writeProjectConfig(req.user, dir, patch) });
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -340,7 +354,7 @@ app.post('/api/projects/:project/sessions', (req, res) => {
       }),
     });
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -353,7 +367,7 @@ app.patch('/api/projects/:project/sessions/:id', (req, res) => {
     if (req.body?.avatar !== undefined) patch.avatar = req.body.avatar;
     res.json({ session: updateSession(req.user, req.params.project, req.params.id, patch) });
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -363,7 +377,7 @@ app.delete('/api/projects/:project/sessions/:id', (req, res) => {
   try {
     res.json(deleteSession(req.user, req.params.project, req.params.id));
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -394,7 +408,7 @@ app.post('/api/projects/:project/mcp', (req, res) => {
   try {
     res.json({ servers: addMcpServer(req.user, dir, String(req.body?.name || '').trim(), req.body || {}) });
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 app.delete('/api/projects/:project/mcp/:name', (req, res) => {
@@ -427,7 +441,7 @@ app.post('/api/skills', (req, res) => {
   try {
     res.json(createSkill(req.user, scope, String(req.body?.name || '').trim(), req.body?.description, req.body?.body));
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 app.delete('/api/skills/:name', (req, res) => {
@@ -442,7 +456,7 @@ app.post('/api/lessons', (req, res) => {
   try {
     res.json(createLesson(req.user, req.body || {}));
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 app.delete('/api/lessons/:id', (req, res) => {
@@ -453,7 +467,7 @@ app.post('/api/lessons/:id/promote', (req, res) => {
   try {
     res.json(promoteLessonToSkill(req.user, req.params.id));
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 app.post('/api/projects/:project/inject-lessons', (req, res) => {
@@ -462,7 +476,7 @@ app.post('/api/projects/:project/inject-lessons', (req, res) => {
   try {
     res.json(injectLessonsIntoProject(req.user, dir, Array.isArray(req.body?.lessonIds) ? req.body.lessonIds : []));
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -473,7 +487,7 @@ app.post('/api/templates', (req, res) => {
   try {
     res.json(saveProjectAsTemplate(req.user, dir, String(req.body?.name || '').trim(), req.body?.description));
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -524,7 +538,7 @@ app.post('/api/admin/users', requireAdmin, (req, res) => {
     const user = createUser({ username: String(req.body?.username || '').trim(), password: String(req.body?.password || ''), role: req.body?.role === 'admin' ? 'admin' : 'user' });
     res.json({ id: user.id, username: user.username, role: user.role, createdAt: user.createdAt });
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 // "Increased by admin on request" -- no self-service request queue, just a direct admin action;
@@ -536,7 +550,7 @@ app.patch('/api/admin/users/:id/quota', requireAdmin, (req, res) => {
     const user = setUserQuota(req.params.id, gb * GB);
     res.json({ id: user.id, quotaBytes: user.quotaBytes });
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendError(res, err);
   }
 });
 

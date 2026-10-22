@@ -315,20 +315,37 @@ async function pullWorkspace(cfg, project, name, cwd) {
     if (!r.ok) die(`git fetch from bundle failed: ${r.out.trim()}`);
     console.log(`  ${c.dim(`workspace ← ${Math.round(data.length / 1024)}KB into refs/teleport/*`)}`);
 
+    // Whichever branch actually arrived, not an assumed `main`. The server's default branch is
+    // whatever git chose there, so hardcoding one name made a bundle from a `master` repo always
+    // look un-mergeable for a reason that had nothing to do with the work in it.
+    const listed = gitQuiet(['for-each-ref', '--format=%(refname)', 'refs/teleport/'], cwd);
+    const refsIn = listed.ok ? listed.out.trim().split('\n').filter(Boolean) : [];
+    const incRef = refsIn.find((r) => r.endsWith('/main')) || refsIn.find((r) => r.endsWith('/master')) || refsIn[0];
+    if (!incRef) return;
+
     const dirty = gitQuiet(['status', '--porcelain'], cwd);
     if (dirty.ok && dirty.out.trim()) {
-      console.log(`  ${c.yellow('!')} uncommitted local changes — not fast-forwarding. Merge when ready: ${c.cyan('git merge refs/teleport/main')}`);
+      console.log(`  ${c.yellow('!')} uncommitted local changes — not fast-forwarding. Merge when ready: ${c.cyan(`git merge ${incRef}`)}`);
       return;
     }
     const head = gitQuiet(['rev-parse', 'HEAD'], cwd);
-    const inc = gitQuiet(['rev-parse', 'refs/teleport/main'], cwd);
-    if (!head.ok || !inc.ok) return;
+    const inc = gitQuiet(['rev-parse', incRef], cwd);
+    if (!head.ok || !inc.ok) {
+      // No HEAD at all means this is a fresh directory receiving a session for the first time, so
+      // there is nothing to fast-forward *from* -- check the arrived branch out instead, which is
+      // what makes `codez down` into an empty folder actually produce the files.
+      if (!head.ok && inc.ok) {
+        const co = gitQuiet(['checkout', '-q', '-B', incRef.split('/').pop(), incRef], cwd);
+        if (co.ok) console.log(`  ${c.green('✓')} checked out ${incRef.split('/').pop()} from the arrived session`);
+      }
+      return;
+    }
     const base = gitQuiet(['merge-base', head.out.trim(), inc.out.trim()], cwd);
     if (base.ok && base.out.trim() === head.out.trim() && head.out.trim() !== inc.out.trim()) {
-      const ff = gitQuiet(['merge', '--ff-only', 'refs/teleport/main', '-q'], cwd);
+      const ff = gitQuiet(['merge', '--ff-only', incRef, '-q'], cwd);
       if (ff.ok) console.log(`  ${c.green('✓')} fast-forwarded your workspace`);
     } else if (base.ok && base.out.trim() !== head.out.trim()) {
-      console.log(`  ${c.yellow('!')} workspaces diverged — merge when ready: ${c.cyan('git merge refs/teleport/main')}`);
+      console.log(`  ${c.yellow('!')} workspaces diverged — merge when ready: ${c.cyan(`git merge ${incRef}`)}`);
     }
   } finally {
     fs.rmSync(bundle, { force: true });
