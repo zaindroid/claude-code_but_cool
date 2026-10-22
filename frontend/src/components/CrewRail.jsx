@@ -1,11 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import CrewAvatar from './CrewAvatar.jsx';
-import { listSessions, createSession, updateSession } from '../api.js';
-
-// Two letters is enough to tell faces apart at a glance, and short enough to sit in a corner
-// badge without pushing anything. Only ever shown when a project's crew actually mixes agents --
-// see `mixed` below.
-const AGENT_MARK = { claude: 'cl', opencode: 'oc', codex: 'cx', deepcode: 'dc' };
+import { createSession, updateSession } from '../api.js';
 
 // The crew, inline in the top strip. These faces are the app's only persistent navigation: click
 // one to put that agent on the screen.
@@ -23,18 +18,21 @@ const AGENT_MARK = { claude: 'cl', opencode: 'oc', codex: 'cx', deepcode: 'dc' }
 export default function CrewRail({
   project,
   activeSession,
+  sessions = [],
+  showProjects = false,
+  pages = [],
+  activePage = 'claude',
+  onPage,
   onSelect,
   onResume,
   running,
   activity,
   awake,
-  refreshKey,
-  onSessionsChange,
+  onChanged,
   agents = [],
   defaultAgent = 'claude',
   onCreated,
 }) {
-  const [sessions, setSessions] = useState([]);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState('');
   const [draftAgent, setDraftAgent] = useState(defaultAgent);
@@ -44,36 +42,19 @@ export default function CrewRail({
   const [busy, setBusy] = useState(false);
   const addRef = useRef(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    listSessions(project)
-      .then((r) => {
-        if (cancelled) return;
-        setSessions(r.sessions || []);
-        onSessionsChange?.(r.sessions || []);
-      })
-      .catch(() => !cancelled && setSessions([]));
-    return () => {
-      cancelled = true;
-    };
-  }, [project, refreshKey]);
-
-  // What a new face runs unless you say otherwise: whatever the last one you added to this project
-  // runs. "Same as last time" is the most learnable default and self-corrects after one deliberate
-  // choice, so a crew stays coherent without anyone maintaining a setting.
+  // What a new face runs unless you say otherwise: the agent whose page you are on. No guessing
+  // and no setting to maintain -- you are standing in the answer, and the chips below still let
+  // you override it for one face without leaving the page.
   //
-  // The project's own declared agent is only the fallback for an empty crew -- live-checked
-  // against a real account, where a project created as `deepcode` had three Claude sessions in it,
-  // so inheriting the project would have quietly offered DeepCode and lost name-addressing with
-  // it. The sessions file is append-ordered, so the last entry is the most recent.
-  const inheritedAgent = sessions.length ? sessions[sessions.length - 1].agent || defaultAgent : defaultAgent;
-
+  // This replaces inheriting the *project's* declared agent, which was live-caught offering
+  // DeepCode in a project (`zmain`) whose whole crew was Claude, silently costing name-addressing
+  // and teleport.
   useEffect(() => {
     if (adding) {
-      setDraftAgent(inheritedAgent);
+      setDraftAgent(defaultAgent);
       addRef.current?.focus();
     }
-  }, [adding, inheritedAgent]);
+  }, [adding, defaultAgent]);
 
   // Which pose each face wears. `activity` is the real signal -- a timestamp set whenever that
   // session's PTY actually emits output -- so "working" means the agent genuinely just said
@@ -89,11 +70,6 @@ export default function CrewRail({
     return 'asleep';
   }
 
-  // Agent badges appear only when this project's crew actually runs more than one CLI. With an
-  // all-Claude crew there is nothing to tell apart, so the badge would be decoration; the moment
-  // you mix, the distinction is real and every face gets marked.
-  const mixed = new Set(sessions.map((s) => s.agent || 'claude')).size > 1;
-
   // The selected session, when it has no agent running. `null` the rest of the time, which is what
   // hides the Resume button.
   const selected = sessions.find((s) => s.name === activeSession) || null;
@@ -101,13 +77,6 @@ export default function CrewRail({
 
   function agentLabel(id) {
     return agents.find((a) => a.id === (id || 'claude'))?.label || id || 'claude';
-  }
-
-  async function reload() {
-    const r = await listSessions(project).catch(() => ({ sessions: [] }));
-    setSessions(r.sessions || []);
-    onSessionsChange?.(r.sessions || []);
-    return r.sessions || [];
   }
 
   async function submitNew(e) {
@@ -120,8 +89,8 @@ export default function CrewRail({
       const { session } = await createSession(project, name, draftAgent);
       setDraft('');
       setAdding(false);
-      await reload();
-      onSelect(session.name);
+      await onChanged?.();
+      onSelect({ ...session, project });
       // Adding an agent should leave you with a *running* agent, not a bash prompt. The parent
       // owns this because waking means typing into the session's live terminal, which only exists
       // once the terminal component has mounted and its socket has spoken -- see App.jsx.
@@ -143,9 +112,9 @@ export default function CrewRail({
     if (!name || name === s.name) return;
     setError(null);
     try {
-      await updateSession(project, s.id, { name });
-      await reload();
-      if (activeSession === s.name) onSelect(name);
+      await updateSession(s.project || project, s.id, { name });
+      await onChanged?.();
+      if (activeSession === s.name) onSelect({ ...s, name, project: s.project });
     } catch (err) {
       setError(err.message);
     }
@@ -153,6 +122,38 @@ export default function CrewRail({
 
   return (
     <div className="crew-rail">
+      {/* One page per CLI you have agents on, each listing that CLI's agents from every project.
+          Shown only once you actually run more than one, on the same principle as the agent marks
+          on the faces: with a single-CLI crew there is nothing to choose between, so the tabs
+          would be chrome that teaches you nothing.
+
+          Grouping this way rather than by project is not cosmetic. A Claude session's name is
+          unique across the whole account and is how other agents address it, so every face on the
+          Claude page is a peer that can message every other one -- which is exactly what the
+          project-shaped view hid. The other CLIs have no equivalent, and their pages say so. */}
+      {pages.length > 1 && (
+        <div className="crew-pages" role="tablist" aria-label="Agent pages">
+          {pages.map((pg) => (
+            <button
+              key={pg.id}
+              type="button"
+              role="tab"
+              aria-selected={pg.id === activePage}
+              className={`crew-page ${pg.id === activePage ? 'is-on' : ''}`}
+              onClick={() => onPage?.(pg.id)}
+              title={
+                pg.id === 'claude'
+                  ? `${pg.count} Claude Code ${pg.count === 1 ? 'agent' : 'agents'} — all peers, each reachable by name`
+                  : `${pg.count} ${pg.label} ${pg.count === 1 ? 'agent' : 'agents'} — each runs on its own, not addressable by name`
+              }
+            >
+              {pg.label}
+              <span className="crew-page-count">{pg.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="crew-faces">
         {sessions.map((s) => {
           const state = stateOf(s);
@@ -175,7 +176,7 @@ export default function CrewRail({
               key={s.id}
               type="button"
               className={`crew-member-btn ${activeSession === s.name ? 'is-active' : ''}`}
-              onClick={() => onSelect(s.name)}
+              onClick={() => onSelect(s)}
               onDoubleClick={() => {
                 setRenameDraft(s.name);
                 setRenaming(s.id);
@@ -183,9 +184,14 @@ export default function CrewRail({
               title={`${s.name} — ${state === 'asleep' && awake?.has(s.name) ? 'no agent running (shell open)' : state} · ${agentLabel(s.agent)}${s.origin?.kind === 'local' ? ` · teleported from ${s.origin.machine || 'another machine'}` : ''}\nClick to switch · double-click to rename`}
             >
               <CrewAvatar name={s.name} state={state} size={34} />
-              <span className="crew-member-name">{s.name}</span>
+              <span className="crew-member-name">
+                {s.name}
+                {/* Only when the page actually reaches into more than one project. The two-letter
+                    CLI badge that used to sit here is gone: the page you are on already says
+                    which CLI these are, so repeating it on every face taught nothing. */}
+                {showProjects && <span className="crew-member-where">{s.project}</span>}
+              </span>
               <span className={`crew-dot crew-dot-${state}`} aria-hidden="true" />
-              {mixed && <span className="crew-agent-mark" aria-hidden="true">{AGENT_MARK[s.agent] || '??'}</span>}
             </button>
           );
         })}

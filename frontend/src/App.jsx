@@ -60,7 +60,14 @@ export default function App() {
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [teleportOpen, setTeleportOpen] = useState(false);
-  const [crewOfProject, setCrewOfProject] = useState([]);
+  // The whole crew, every project, as the server sees it. Account-wide rather than per project
+  // because that is the scope a session name actually lives in -- two Claude sessions in different
+  // projects are peers that can address each other by name, so splitting them by project was the
+  // view lying about the model. The agent pages below are slices of this one list.
+  const [crew, setCrew] = useState([]);
+  // Which agent's page the rail is showing. One page per CLI, each listing that CLI's agents from
+  // every project.
+  const [agentPage, setAgentPage] = useState(null);
   // sessionName -> timestamp of the last real output from its PTY. Drives the working face.
   // Held in a ref and mirrored into state on a slow tick rather than set per chunk: a chatty agent
   // emits output many times a second, and re-rendering the rail that often is both wasteful and,
@@ -131,18 +138,28 @@ export default function App() {
   // Who has a live shell right now, asked of the server rather than inferred locally: a session can
   // be awake because of something that happened in another browser, on another device, or because
   // it was teleported in while this tab sat open.
+  const refreshCrew = useCallback(
+    () =>
+      listCrew()
+        .then((r) => {
+          const list = r.sessions || [];
+          setCrew(list);
+          setAwake(new Set(list.filter((s) => s.awake).map((s) => s.name)));
+          setRunning(new Set(list.filter((s) => s.running).map((s) => s.name)));
+          return list;
+        })
+        .catch(() => []),
+    []
+  );
+
+  // The slice of the crew that belongs to the project on screen. Derived rather than fetched, so
+  // there is one source of truth and no window where the two disagree.
+  const crewOfProject = useMemo(() => crew.filter((s) => s.project === activeProject), [crew, activeProject]);
+
   useEffect(() => {
     if (!authed) return undefined;
     let cancelled = false;
-    const poll = () =>
-      listCrew()
-        .then((r) => {
-          if (cancelled) return;
-          const list = r.sessions || [];
-          setAwake(new Set(list.filter((s) => s.awake).map((s) => s.name)));
-          setRunning(new Set(list.filter((s) => s.running).map((s) => s.name)));
-        })
-        .catch(() => {});
+    const poll = () => !cancelled && refreshCrew();
     poll();
     const id = setInterval(poll, 5000);
     return () => {
@@ -262,6 +279,17 @@ export default function App() {
     openTerm(activeProject, session);
   }
 
+  // Opening a face from an agent page, which may belong to a project other than the one on screen.
+  // Switching the project as a side effect of clicking the agent is the point: on a Claude page
+  // you are picking the agent you want to talk to, and which folder it happens to live in is its
+  // business, not a step you should have to take first.
+  function openSession(record) {
+    if (!record) return;
+    if (record.project !== activeProject) setActiveProject(record.project);
+    setActiveSessionByProject((prev) => ({ ...prev, [record.project]: record.name }));
+    openTerm(record.project, record.name);
+  }
+
   // The crew rail's Resume button. Switches to that session and starts its agent -- the two things
   // you wanted when you clicked it, in one press, with no command to remember.
   //
@@ -270,11 +298,13 @@ export default function App() {
   // the command typed in now. A session with no shell is about to get one, and that shell's prompt
   // is the only reliable "ready" signal there is, so that one is armed and fires on it.
   function resumeSession(name) {
-    const record = crewOfProject.find((s) => s.name === name);
+    // Looked up across the whole crew, not just this project's: the Resume button sits on an agent
+    // page that spans projects, so the session it names may not be the one on screen yet.
+    const record = crew.find((s) => s.name === name);
     if (!record) return;
-    selectSession(name);
-    if (awake.has(name)) runWake(activeProject, record);
-    else armWake(activeProject, record);
+    openSession(record);
+    if (awake.has(name)) runWake(record.project, record);
+    else armWake(record.project, record);
   }
 
   async function handleCreate(name, opts) {
@@ -294,6 +324,28 @@ export default function App() {
   // The project's own agent choice, made when it was created. It is the default a new crew member
   // inherits, and the fallback for anything not tied to a particular session.
   const projectAgent = projects.find((p) => p.name === activeProject)?.agent || 'claude';
+
+  // One page per CLI you actually have agents on. Built from the crew rather than from the list of
+  // installed agents, so a CLI you have never used does not get a permanently empty tab -- the
+  // page appears the moment you add your first agent of that kind, and goes away with the last.
+  // The page you are on is also what a new face defaults to, which is why there is no separate
+  // setting for it: you are already standing in the answer.
+  const pageOrder = agents.length ? agents.map((a) => a.id) : ['claude'];
+  const pageIds = [...new Set(crew.map((s) => s.agent || 'claude'))].sort(
+    (x, y) => pageOrder.indexOf(x) - pageOrder.indexOf(y)
+  );
+  const agentPages = pageIds.map((id) => ({
+    id,
+    label: agents.find((a) => a.id === id)?.label || id,
+    count: crew.filter((s) => (s.agent || 'claude') === id).length,
+  }));
+  // Follows the agent you are actually talking to unless you have picked a page yourself, so
+  // clicking into a DeepCode session does not leave you looking at the Claude page.
+  const fallbackPage = activeRecord?.agent || (pageIds.includes(projectAgent) ? projectAgent : pageIds[0]) || 'claude';
+  const activePage = agentPage && pageIds.includes(agentPage) ? agentPage : fallbackPage;
+  const pageCrew = crew.filter((s) => (s.agent || 'claude') === activePage);
+  // Only worth naming each face's project when the page actually spans more than one.
+  const pageSpansProjects = new Set(pageCrew.map((s) => s.project)).size > 1;
 
   // Types a real command into the live terminal, which is the same path a keystroke takes. Kept
   // this way on purpose: what runs is always something the person could have typed and can see.
@@ -469,15 +521,19 @@ export default function App() {
             <CrewRail
               project={activeProject}
               activeSession={activeSession}
-              onSelect={selectSession}
+              sessions={pageCrew}
+              showProjects={pageSpansProjects}
+              pages={agentPages}
+              activePage={activePage}
+              onPage={setAgentPage}
+              onSelect={openSession}
               activity={activity}
               awake={awake}
               running={running}
               onResume={resumeSession}
-              refreshKey={crewVersion}
-              onSessionsChange={setCrewOfProject}
+              onChanged={refreshCrew}
               agents={agents}
-              defaultAgent={projectAgent}
+              defaultAgent={activePage}
               onCreated={autoWake}
             />
           )}

@@ -1129,3 +1129,55 @@ button { cursor: pointer; }
   transform: translateY(-1px);
 }
 .crew-resume:active { transform: translateY(0); }
+
+/* ---------------------------------------------------------------- agent pages */
+/* One tab per CLI you run agents on. Sits left of the faces and is the only thing in the strip
+   that changes *what* the rail lists rather than which face is selected, so it reads as a quieter
+   row of words rather than another set of chips competing with the agent picker.
+   Fixed height and no border-width change between states: this row sits directly above the
+   terminal, and anything here that changes size resizes the terminal (KNOWN_ISSUES.md). */
+.crew-pages {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  padding-right: 10px;
+  margin-right: 4px;
+  border-right: 1px solid var(--border);
+}
+.crew-page {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.16s ease, background 0.16s ease;
+}
+.crew-page:hover { color: var(--text); background: var(--surface-2, rgba(128, 128, 128, 0.1)); }
+.crew-page.is-on { color: var(--text); background: var(--surface-2, rgba(128, 128, 128, 0.14)); font-weight: 500; }
+.crew-page-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+}
+
+/* The project a face belongs to, shown only when the page spans more than one. Second line under
+   the name, quieter than it, because it answers "where does this one live" -- a question you ask
+   occasionally, not while scanning for a face. */
+.crew-member-where {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
