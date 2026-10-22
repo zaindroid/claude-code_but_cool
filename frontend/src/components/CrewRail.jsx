@@ -142,9 +142,11 @@ export default function CrewRail({
               className={`crew-page ${pg.id === activePage ? 'is-on' : ''}`}
               onClick={() => onPage?.(pg.id)}
               title={
-                pg.id === 'claude'
-                  ? `${pg.count} Claude Code ${pg.count === 1 ? 'agent' : 'agents'} — all peers, each reachable by name`
-                  : `${pg.count} ${pg.label} ${pg.count === 1 ? 'agent' : 'agents'} — each runs on its own, not addressable by name`
+                pg.count === 0
+                  ? `No ${pg.label} agents yet — + makes one here`
+                  : pg.id === 'claude'
+                    ? `${pg.count} Claude Code ${pg.count === 1 ? 'agent' : 'agents'} — all peers, each reachable by name`
+                    : `${pg.count} ${pg.label} ${pg.count === 1 ? 'agent' : 'agents'} — each runs on its own, not addressable by name`
               }
             >
               {pg.label}
@@ -195,6 +197,13 @@ export default function CrewRail({
             </button>
           );
         })}
+
+        {/* An empty page is not a broken one -- it is the page you go to in order to make your
+            first agent of that kind. Say so, rather than leaving a bare `+` floating in a strip
+            that looks like it failed to load. */}
+        {sessions.length === 0 && !adding && (
+          <span className="crew-empty">no one here yet —</span>
+        )}
 
         {adding ? (
           <form

@@ -325,15 +325,23 @@ export default function App() {
   // inherits, and the fallback for anything not tied to a particular session.
   const projectAgent = projects.find((p) => p.name === activeProject)?.agent || 'claude';
 
-  // One page per CLI you actually have agents on. Built from the crew rather than from the list of
-  // installed agents, so a CLI you have never used does not get a permanently empty tab -- the
-  // page appears the moment you add your first agent of that kind, and goes away with the last.
-  // The page you are on is also what a new face defaults to, which is why there is no separate
-  // setting for it: you are already standing in the answer.
+  // One page per CLI, standing: Claude's agents on one, DeepCode's on another, OpenCode's on a
+  // third, whether or not any of them have members yet.
+  //
+  // These were built from the crew at first, so a page appeared with its first agent and vanished
+  // with its last. That is tidier and wrong -- it made the pages a *consequence* of what you had
+  // rather than a place you could decide to go, and an empty CLI was unreachable precisely when
+  // you wanted it, since the page you are on is also what the `+` creates. You could not get to
+  // the OpenCode page to make your first OpenCode agent.
+  //
+  // A CLI that is not installed in this container gets no page, because that page could only
+  // offer you a face that cannot run -- unless agents of that kind already exist, in which case
+  // hiding them would hide real sessions.
   const pageOrder = agents.length ? agents.map((a) => a.id) : ['claude'];
-  const pageIds = [...new Set(crew.map((s) => s.agent || 'claude'))].sort(
-    (x, y) => pageOrder.indexOf(x) - pageOrder.indexOf(y)
-  );
+  const inCrew = new Set(crew.map((s) => s.agent || 'claude'));
+  const pageIds = [
+    ...new Set([...agents.filter((a) => a.available).map((a) => a.id), ...inCrew]),
+  ].sort((x, y) => pageOrder.indexOf(x) - pageOrder.indexOf(y));
   const agentPages = pageIds.map((id) => ({
     id,
     label: agents.find((a) => a.id === id)?.label || id,
