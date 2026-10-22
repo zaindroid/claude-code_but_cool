@@ -126,6 +126,9 @@ export default function TerminalView({ project, session = null, active, register
       else params.set('sessionId', sessionIdRef.current);
       socket = new WebSocket(`${proto}://${window.location.host}/ws/terminal?${params.toString()}`);
       wsRef.current = socket;
+      // Counts as a sign of life so the watchdog can also time out a connection that never
+      // finishes opening, not just one that goes quiet after opening.
+      lastSeen = Date.now();
 
       socket.onopen = () => {
         attempt = 0;
@@ -191,7 +194,17 @@ export default function TerminalView({ project, session = null, active, register
     // one of it no matter how many reconnects happen.
     const beat = setInterval(() => {
       if (disposed || exited) return;
-      if (!socket || socket.readyState !== WebSocket.OPEN) return; // onclose/backoff owns this
+      if (!socket) return;
+      if (socket.readyState === WebSocket.CONNECTING) {
+        // A socket can hang here indefinitely -- the TCP connect succeeds but the HTTP upgrade
+        // never completes, which is what a server mid-restart or a proxy accepting without
+        // forwarding looks like. It is not OPEN, so the silence check below never sees it, and no
+        // close arrives to trigger a retry: another way to sit stuck forever. Given up on at the
+        // same deadline as a silent open socket.
+        if (Date.now() - lastSeen > SILENCE_MS) socket.close();
+        return;
+      }
+      if (socket.readyState !== WebSocket.OPEN) return; // closing/closed: onclose owns the retry
       if (Date.now() - lastSeen > SILENCE_MS) {
         // Silent long enough to call it: close it ourselves, which fires onclose and hands this
         // to the same backoff that handles an honest disconnect. Deliberately not reconnecting
