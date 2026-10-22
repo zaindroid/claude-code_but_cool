@@ -93,7 +93,13 @@ export function attachTerminal(ws, user, { project, session, sessionId, cols, ro
     // the new viewer sees the live state instead of an empty pane.
     clearTimeout(entry.timeout);
     entry.timeout = null;
-    if (entry.chunks.length) send(ws, { type: 'data', data: entry.chunks.join('') });
+    // Sent as its own message type, not as plain `data`, so the client can tell a repaint of
+    // history from live output. It needs to: on a *re*connect it clears the pane first so the
+    // replay is authoritative instead of stacking on the copy already there -- and it must only
+    // do that when a replay is genuinely coming. A reconnect to a terminal that no longer exists
+    // (the container was replaced, which is the common case) gets no replay, and clearing there
+    // would throw away the scrollback the person still wants to read.
+    if (entry.chunks.length) send(ws, { type: 'replay', data: entry.chunks.join('') });
   } else {
     // Read fresh on every new terminal, not cached at startup, so a settings change applies to
     // the next terminal opened without needing to restart the whole app -- an already-running

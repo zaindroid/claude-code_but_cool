@@ -98,11 +98,6 @@ export default function TerminalView({ project, session = null, active, register
 
       socket.onopen = () => {
         attempt = 0;
-        // A terminal replays its recent output to every attaching viewer (pty.js), which is what
-        // makes reattaching show live state instead of an empty pane. On a *re*connect that same
-        // replay would land underneath the copy already on screen and double the scrollback, so
-        // clearing first makes the repaint authoritative rather than additive.
-        if (replacing) term.reset();
       };
 
       socket.onmessage = (event) => {
@@ -112,6 +107,16 @@ export default function TerminalView({ project, session = null, active, register
           // The crew rail's "working" face is driven from here -- real output from the real PTY, so
           // a face only looks busy when its agent genuinely just said something. Nothing polls and
           // nothing guesses; a session with no output is honestly shown as resting.
+          if (session && onActivity) onActivity(session);
+        } else if (msg.type === 'replay') {
+          // The shell's recent output, repainted because we just attached (pty.js). On a
+          // reconnect it would otherwise land underneath the copy already on screen and double
+          // the scrollback, so the pane is cleared first -- but only here, where a replay is
+          // actually in hand. Clearing in onopen instead would wipe the scrollback on every
+          // reconnect to a terminal that no longer exists, which is exactly what a replaced
+          // container gives you: nothing to repaint and an empty screen where your history was.
+          if (replacing) term.reset();
+          term.write(msg.data);
           if (session && onActivity) onActivity(session);
         } else if (msg.type === 'exit') {
           exited = true;
