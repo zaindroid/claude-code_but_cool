@@ -238,16 +238,31 @@ export function attachTerminal(ws, user, { project, session, sessionId, cols, ro
 // the keyboard to. When the shell is at a prompt, that is the shell's own group. When the shell
 // has started a job, it is the job's. So "foreground job running" is exactly `tpgid != pgrp`, and
 // it costs one small read per session.
-function statOf(pid) {
+// Exported for its own test. Split out because the failure mode here is not a crash: every field
+// of /proc/stat is a bare number, so an off-by-one offset reads a plausible value and the only
+// symptom is a Resume button that is wrong. Offsets verified against the real /proc inside the
+// live container -- `1234 (node) R 0 1234 1234 0 -1 ...` -- not from memory.
+export function parseProcStat(raw) {
   // comm (field 2) is wrapped in parens and may itself contain spaces or parens, so everything is
   // indexed from the LAST ')' rather than by splitting the whole line -- the classic /proc/stat
-  // parsing bug.
-  const raw = readFileSync(`/proc/${pid}/stat`, 'utf8');
+  // parsing bug. Field 3 (state) lands at f[0], so each later field is its man-page number minus
+  // three.
   const f = raw.slice(raw.lastIndexOf(')') + 2).split(' ');
-  return { ppid: Number(f[1]), pgrp: Number(f[2]), tpgid: Number(f[5]) };
+  return { ppid: Number(f[1]), pgrp: Number(f[2]), tty: Number(f[4]), tpgid: Number(f[5]) };
 }
 
-function hasForegroundJob(rootPid) {
+// A terminal's tpgid is the process group it is currently handing the keyboard to. At a prompt
+// that is the shell's own group; with a job running it is the job's. -1 means no controlling
+// terminal at all, which is not a foreground job either.
+export function hasForegroundJob(st) {
+  return st.tpgid > 0 && st.tpgid !== st.pgrp;
+}
+
+function statOf(pid) {
+  return parseProcStat(readFileSync(`/proc/${pid}/stat`, 'utf8'));
+}
+
+function shellBusyUnder(rootPid) {
   // rootPid is the `su` we spawned; the shell is its child, and the shell is what owns the
   // terminal's foreground group.
   for (const name of readdirSync('/proc')) {
@@ -259,7 +274,7 @@ function hasForegroundJob(rootPid) {
       continue; // the process ended between readdir and read -- normal, not an error
     }
     if (st.ppid !== rootPid) continue;
-    return st.tpgid > 0 && st.tpgid !== st.pgrp;
+    return hasForegroundJob(st);
   }
   return false;
 }
@@ -270,7 +285,7 @@ export function busySessionNames(user) {
   for (const [key, entry] of terminals) {
     if (!entry.named || !key.startsWith(prefix)) continue;
     try {
-      if (hasForegroundJob(entry.term.pid)) names.add(key.slice(key.indexOf(':s:') + 3));
+      if (shellBusyUnder(entry.term.pid)) names.add(key.slice(key.indexOf(':s:') + 3));
     } catch {
       // No /proc (a non-Linux dev machine) means this signal is simply unavailable. Reported as
       // "not running" rather than guessed, which costs a visible Resume button on a session that
