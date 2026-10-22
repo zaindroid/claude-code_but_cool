@@ -103,6 +103,21 @@ export default function TerminalView({ project, session = null, active, register
     const dim = (text) => `\r\n\x1b[2m${text}\x1b[0m\r\n`;
 
     function connect({ replacing = false, revive = true } = {}) {
+      // Any previous socket is cut loose here, handlers first. Without this, connecting while an
+      // old socket is still CLOSING leaves that socket to fire its own `onclose` afterwards and
+      // schedule a *second* reconnect -- two live sockets on one terminal, which means two
+      // viewers server-side and every byte of output arriving twice. Reachable from `revive()`,
+      // which deliberately does not wait for a close to complete.
+      if (socket) {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onclose = null;
+        try {
+          socket.close();
+        } catch {
+          /* already gone */
+        }
+      }
       // Rebuilt per attempt rather than once: the pane may have been resized while the socket was
       // down, and the server sizes the PTY from these.
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
