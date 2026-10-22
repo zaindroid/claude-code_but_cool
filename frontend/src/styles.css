@@ -817,7 +817,9 @@ button { cursor: pointer; }
 
 /* Inline in the strip, horizontal, with no frame of its own -- the faces sit directly on the
    console surface like magnets on a board. */
-.crew-rail { display: flex; align-items: center; gap: 10px; min-width: 0; }
+/* `relative` so the agent picker can hang off the rail. It has to anchor here and not on the
+   naming form inside `.crew-faces`, because that scroller clips anything leaving its box. */
+.crew-rail { position: relative; display: flex; align-items: center; gap: 10px; min-width: 0; }
 
 .crew-faces {
   display: flex;
@@ -940,8 +942,11 @@ button { cursor: pointer; }
    Absolutely positioned, deliberately: this appears and disappears as the naming form opens and
    closes, and the strip sits directly above the terminal -- anything here that changed the
    strip's height would resize the terminal under it, which is the exact path the layout-shift
-   fix closed. Out of flow, it cannot. */
-.crew-add-form { position: relative; }
+   fix closed. Out of flow, it cannot.
+
+   Anchored to `.crew-rail`, not to the naming form: the form sits inside the horizontally
+   scrolling `.crew-faces`, and an `overflow-x: auto` box clips vertically too, so a panel
+   dropping below the strip from in there was clipped away entirely. */
 .crew-agent-pick {
   position: absolute;
   top: calc(100% + 9px);

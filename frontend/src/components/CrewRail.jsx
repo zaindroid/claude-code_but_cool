@@ -220,37 +220,6 @@ export default function CrewRail({
               disabled={busy}
               aria-label="New agent name"
             />
-            {/* Which CLI this face runs. Absolutely positioned under the input rather than inline
-                in the strip: the strip must not change height or width when this appears, because
-                a reflow of the strip resizes the terminal below it, and that path is exactly the
-                one the layout-shift work closed (AGENT_CONTEXT/KNOWN_ISSUES.md). */}
-            <div className="crew-agent-pick" role="radiogroup" aria-label="Which agent to run">
-              <div className="crew-agent-chips">
-                {(agents.length ? agents : [{ id: 'claude', label: 'Claude Code', available: true }]).map((a) => (
-                  <button
-                    key={a.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={draftAgent === a.id}
-                    className={`crew-agent-chip ${draftAgent === a.id ? 'is-on' : ''}`}
-                    disabled={!a.available}
-                    // Checked live by the server with `command -v`, so this is "not installed in
-                    // your container", not "not supported". Saying which is the difference
-                    // between a fixable thing and a dead end.
-                    title={a.available ? a.label : `${a.label} isn’t installed in your container`}
-                    onMouseDown={(e) => e.preventDefault()} // keeps focus in the name field
-                    onClick={() => setDraftAgent(a.id)}
-                  >
-                    {a.label}
-                  </button>
-                ))}
-              </div>
-              <p className="crew-agent-note">
-                {draftAgent === 'claude'
-                  ? 'Other agents can reach this one by name.'
-                  : 'Runs here with its own history. Only Claude Code sessions are addressable by name or teleportable.'}
-              </p>
-            </div>
           </form>
         ) : (
           <button type="button" className="crew-add" onClick={() => setAdding(true)} title="Add an agent">
@@ -258,6 +227,46 @@ export default function CrewRail({
           </button>
         )}
       </div>
+
+      {/* Which CLI a new face will run. Out of flow so the strip cannot change height when it
+          appears -- a reflow of the strip resizes the terminal under it, which is the exact path
+          the layout-shift work closed (AGENT_CONTEXT/KNOWN_ISSUES.md).
+
+          Anchored to the rail rather than to the naming form, even though it belongs to that
+          form: the faces scroll horizontally, and `overflow-x: auto` clips its own box in BOTH
+          axes, so a panel dropping below the strip from inside the scroller was invisible --
+          these chips could not be reached at all, which is why every face made in the UI came
+          out as Claude whatever you meant to pick. The rail itself never scrolls, so from here
+          the panel has nothing to be clipped by. */}
+      {adding && (
+        <div className="crew-agent-pick" role="radiogroup" aria-label="Which agent to run">
+          <div className="crew-agent-chips">
+            {(agents.length ? agents : [{ id: 'claude', label: 'Claude Code', available: true }]).map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                role="radio"
+                aria-checked={draftAgent === a.id}
+                className={`crew-agent-chip ${draftAgent === a.id ? 'is-on' : ''}`}
+                disabled={!a.available}
+                // Checked live by the server with `command -v`, so this is "not installed in
+                // your container", not "not supported". Saying which is the difference
+                // between a fixable thing and a dead end.
+                title={a.available ? a.label : `${a.label} isn’t installed in your container`}
+                onMouseDown={(e) => e.preventDefault()} // keeps focus in the name field
+                onClick={() => setDraftAgent(a.id)}
+              >
+                {a.label}
+              </button>
+            ))}
+          </div>
+          <p className="crew-agent-note">
+            {draftAgent === 'claude'
+              ? 'Other agents can reach this one by name.'
+              : 'Runs here with its own history. Only Claude Code sessions are addressable by name or teleportable.'}
+          </p>
+        </div>
+      )}
 
       {/* Resume, as a button rather than as a command you have to know.
           Deliberately separate from the faces: clicking a face only switches to it, so there is
