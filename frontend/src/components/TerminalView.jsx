@@ -14,7 +14,7 @@ import '@xterm/xterm/css/xterm.css';
 // is on the other end: the backend keys a named session's PTY by name rather than by a random
 // per-tab id, so the shell survives a reload, can take a second viewer, and keeps running while
 // nobody is watching. Without it this is the old anonymous terminal, tied to this tab.
-export default function TerminalView({ project, session = null, active, registerSender, onActivity }) {
+export default function TerminalView({ project, session = null, active, registerSender, onActivity, onFreshShell }) {
   const containerRef = useRef(null);
   const termRef = useRef(null);
   const wsRef = useRef(null);
@@ -75,18 +75,34 @@ export default function TerminalView({ project, session = null, active, register
     // Two kinds of close are deliberately told apart. The server going away is not the person's
     // decision, so it heals itself. Their own shell exiting *is* their decision, so it waits to be
     // asked rather than quietly spawning another shell underneath them.
+    //
+    // Reconnecting on `onclose` alone is not enough, and this is the part that actually left
+    // terminals stuck: a WebSocket that dies without a TCP FIN -- wifi dropping, a laptop
+    // suspending, a proxy recycling an idle connection, a container being replaced mid-flight --
+    // never fires `onclose` in the browser at all. `readyState` sits at OPEN indefinitely while
+    // nothing arrives, so every event-driven recovery path is waiting for an event that will
+    // never come. The only way out is to stop trusting `readyState` and measure silence instead:
+    // ping on a slow tick, treat a long gap with no reply as death, and close the socket
+    // ourselves so the existing reconnect path can run.
     let socket = null;
     let disposed = false; // the component unmounted -- stop everything, reconnect nothing
     let exited = false; // the shell itself ended, so a close here was expected
     let attempt = 0;
     let retryTimer = null;
+    let lastSeen = Date.now(); // any byte from the server, live output or a pong
+    // Comfortably under the ~60-100s idle timeout common to proxies and CDNs, so a quiet terminal
+    // keeps its connection by being politely noisy rather than discovering it was dropped.
+    const HEARTBEAT_MS = 20_000;
+    // Two and a half missed beats. Long enough that a slow tab or a stalled network blip doesn't
+    // tear down a healthy connection; short enough that you don't sit staring at a dead one.
+    const SILENCE_MS = 50_000;
 
     const send = (payload) => {
       if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
     };
     const dim = (text) => `\r\n\x1b[2m${text}\x1b[0m\r\n`;
 
-    function connect({ replacing = false } = {}) {
+    function connect({ replacing = false, revive = true } = {}) {
       // Rebuilt per attempt rather than once: the pane may have been resized while the socket was
       // down, and the server sizes the PTY from these.
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -98,16 +114,35 @@ export default function TerminalView({ project, session = null, active, register
 
       socket.onopen = () => {
         attempt = 0;
+        lastSeen = Date.now();
       };
 
       socket.onmessage = (event) => {
+        lastSeen = Date.now();
         const msg = JSON.parse(event.data);
+        if (msg.type === 'pong') return; // proof of life, nothing to show
+        if (msg.type === 'attached') {
+          // Which of the two things just happened on the other end (pty.js). Only interesting on
+          // a reconnect: `fresh` there means the shell we were talking to is gone and this is a
+          // new one, which is exactly the state that used to be invisible -- your agent's
+          // conversation still filling the screen above a bash prompt that knows nothing about
+          // it. Said plainly instead, and the parent gets the chance to start the agent back up.
+          if (msg.fresh) {
+            // The notice is only true on a reconnect -- on a first attach there is nothing above
+            // the prompt to be history. The revival below is not conditional on that, though:
+            // opening a session whose shell died while nobody was watching lands you at a bare
+            // prompt with no agent, which is the same dead end arrived at from the other side.
+            if (replacing) term.write(dim('[reconnected — new shell, everything above is history]'));
+            if (session && revive && onFreshShell) onFreshShell(session, project);
+          }
+          return;
+        }
         if (msg.type === 'data') {
           term.write(msg.data);
           // The crew rail's "working" face is driven from here -- real output from the real PTY, so
           // a face only looks busy when its agent genuinely just said something. Nothing polls and
           // nothing guesses; a session with no output is honestly shown as resting.
-          if (session && onActivity) onActivity(session);
+          if (session && onActivity) onActivity(session, project);
         } else if (msg.type === 'replay') {
           // The shell's recent output, repainted because we just attached (pty.js). On a
           // reconnect it would otherwise land underneath the copy already on screen and double
@@ -117,7 +152,7 @@ export default function TerminalView({ project, session = null, active, register
           // container gives you: nothing to repaint and an empty screen where your history was.
           if (replacing) term.reset();
           term.write(msg.data);
-          if (session && onActivity) onActivity(session);
+          if (session && onActivity) onActivity(session, project);
         } else if (msg.type === 'exit') {
           exited = true;
           term.write(dim('[process exited — press any key for a new shell]'));
@@ -137,6 +172,49 @@ export default function TerminalView({ project, session = null, active, register
 
     connect();
 
+    // The watchdog. Runs for the life of the component rather than per socket, so there is exactly
+    // one of it no matter how many reconnects happen.
+    const beat = setInterval(() => {
+      if (disposed || exited) return;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return; // onclose/backoff owns this
+      if (Date.now() - lastSeen > SILENCE_MS) {
+        // Silent long enough to call it: close it ourselves, which fires onclose and hands this
+        // to the same backoff that handles an honest disconnect. Deliberately not reconnecting
+        // directly from here -- one reconnect path, not two.
+        socket.close();
+        return;
+      }
+      send({ type: 'ping' });
+    }, HEARTBEAT_MS);
+
+    // A suspended laptop or a closed lid freezes the timer above, so waking up can land with a
+    // socket that has been dead for hours and a watchdog that has not ticked once. These two
+    // events are the moment a person is most likely to be looking at the terminal, so they get an
+    // immediate check rather than waiting up to a full beat for one.
+    const revive = () => {
+      if (disposed || exited) return;
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        // Looks fine, but "looks fine" is exactly the failure mode. Anything older than a beat
+        // has not been confirmed since before the machine slept.
+        if (Date.now() - lastSeen > HEARTBEAT_MS) socket.close();
+        else send({ type: 'ping' });
+        return;
+      }
+      if (socket && socket.readyState === WebSocket.CONNECTING) return;
+      // Dead and waiting on a backoff that may have grown to seconds. Skip the wait: somebody is
+      // watching now.
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = null;
+      attempt = 0;
+      connect({ replacing: true });
+    };
+    const onVisible = () => {
+      if (!document.hidden) revive();
+    };
+    window.addEventListener('online', revive);
+    window.addEventListener('focus', revive);
+    document.addEventListener('visibilitychange', onVisible);
+
     if (registerSender) {
       // Goes through send(), which reads whichever socket is current, rather than capturing this
       // one -- otherwise every palette button would go silent after the first reconnect.
@@ -148,7 +226,9 @@ export default function TerminalView({ project, session = null, active, register
       // because there is nothing on the other end to receive it yet.
       if (exited) {
         exited = false;
-        connect({ replacing: true });
+        // revive:false -- you ended this shell on purpose, so the new one is yours to use.
+        // Everywhere else a fresh shell means something broke; here it means you asked.
+        connect({ replacing: true, revive: false });
         return;
       }
       send({ type: 'input', data });
@@ -184,6 +264,10 @@ export default function TerminalView({ project, session = null, active, register
       disposed = true;
       if (retryTimer) clearTimeout(retryTimer);
       if (resizeTimer) clearTimeout(resizeTimer);
+      clearInterval(beat);
+      window.removeEventListener('online', revive);
+      window.removeEventListener('focus', revive);
+      document.removeEventListener('visibilitychange', onVisible);
       observer.disconnect();
       onData.dispose();
       socket?.close();

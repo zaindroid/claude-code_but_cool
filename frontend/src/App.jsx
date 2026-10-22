@@ -68,6 +68,9 @@ export default function App() {
   const activityRef = useRef({});
   const [activity, setActivity] = useState({});
   const [awake, setAwake] = useState(() => new Set());
+  // Who has an agent actually in the foreground, which is a different question from who has a
+  // shell (see pty.js's busySessionNames). The Resume button keys off this one.
+  const [running, setRunning] = useState(() => new Set());
   const [crewVersion, setCrewVersion] = useState(0);
   // Real token usage, parsed from Claude Code's own transcripts server-side (tokenUsage.js) --
   // the same accounting `/cost` uses, not an estimate from watching output. It lives in the status
@@ -79,10 +82,17 @@ export default function App() {
   // does, and the crew rail needs it to grey out an agent you cannot start.
   const [agents, setAgents] = useState([]);
   const sendersRef = useRef({});
-  // A session created seconds ago, waiting for its terminal to say its first word so the agent
-  // can be launched into it. Held in a ref because the signal arrives from a websocket callback
-  // registered once, which would close over stale state.
-  const pendingWakeRef = useRef(null);
+  // Sessions waiting for their terminal to say its first word so the agent can be launched into
+  // it. Held in a ref because the signal arrives from a websocket callback registered once, which
+  // would close over stale state. Keyed per terminal rather than being a single slot: a server
+  // restart brings every open terminal back at the same moment, and one slot meant one of them
+  // got its agent and the rest silently did not.
+  const pendingWakeRef = useRef({});
+  // Mirrors of state that the stable websocket callbacks below need to read. Same reason as
+  // above -- they are registered once per terminal and would otherwise see the first render's
+  // values forever.
+  const crewRef = useRef([]);
+  const activeProjectRef = useRef(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -126,7 +136,12 @@ export default function App() {
     let cancelled = false;
     const poll = () =>
       listCrew()
-        .then((r) => !cancelled && setAwake(new Set((r.sessions || []).filter((s) => s.awake).map((s) => s.name))))
+        .then((r) => {
+          if (cancelled) return;
+          const list = r.sessions || [];
+          setAwake(new Set(list.filter((s) => s.awake).map((s) => s.name)));
+          setRunning(new Set(list.filter((s) => s.running).map((s) => s.name)));
+        })
         .catch(() => {});
     poll();
     const id = setInterval(poll, 5000);
@@ -147,19 +162,58 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  const noteActivity = useCallback((session) => {
+  const noteActivity = useCallback((session, project) => {
     activityRef.current = { ...activityRef.current, [session]: Date.now() };
-    // First output from a just-created session's shell is its prompt, which is the real "ready to
-    // take a command" signal -- better than a timer, which would either fire into a shell that
-    // isn't reading yet or wait longer than it needs to.
-    const pending = pendingWakeRef.current;
-    if (pending && pending.record.name === session) {
-      pendingWakeRef.current = null;
+    // First output from a new shell is its prompt, which is the real "ready to take a command"
+    // signal -- better than a timer, which would either fire into a shell that isn't reading yet
+    // or wait longer than it needs to.
+    const key = termKey(project, session);
+    const pending = pendingWakeRef.current[key];
+    if (pending) {
+      delete pendingWakeRef.current[key];
       clearTimeout(pending.timer);
       runWake(pending.project, pending.record);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Arms the launch, rather than launching now: the shell on the other end may not be reading
+  // yet. noteActivity above fires it the moment that shell speaks.
+  const armWake = useCallback((project, record) => {
+    const key = termKey(project, record.name);
+    const prev = pendingWakeRef.current[key];
+    if (prev) clearTimeout(prev.timer);
+    const timer = setTimeout(() => {
+      // Abandoned rather than fired late: if a shell took this long, you have probably started
+      // typing in it yourself, and injecting a command underneath that would be worse than
+      // leaving you to press Wake.
+      delete pendingWakeRef.current[key];
+    }, 8000);
+    pendingWakeRef.current[key] = { project, record, timer };
+  }, []);
+
+  // A named session that came back to a *new* shell -- the server restarted, or a deploy replaced
+  // the container (TerminalView). The conversation itself is safe on disk, so the only thing
+  // missing is the agent process, and the session exists precisely to be running one. Started
+  // back up through the same visible typed-command path as everything else, which for Claude Code
+  // means `--resume` into the transcript that is already there: the server decides start-vs-resume
+  // by looking at whether that file really exists, so this picks the conversation up where it
+  // stopped instead of opening a blank one.
+  const reviveSession = useCallback(
+    (session, project) => {
+      if (project !== activeProjectRef.current) return; // its crew isn't loaded; leave it to Wake
+      const record = crewRef.current.find((s) => s.name === session);
+      if (record) armWake(project, record);
+    },
+    [armWake]
+  );
+
+  useEffect(() => {
+    crewRef.current = crewOfProject;
+  }, [crewOfProject]);
+  useEffect(() => {
+    activeProjectRef.current = activeProject;
+  }, [activeProject]);
 
   // Polled slowly and only while signed in: this reads transcript files on the server, so asking
   // more often than a person could notice would be pure cost for no information.
@@ -208,6 +262,21 @@ export default function App() {
     openTerm(activeProject, session);
   }
 
+  // The crew rail's Resume button. Switches to that session and starts its agent -- the two things
+  // you wanted when you clicked it, in one press, with no command to remember.
+  //
+  // Which of the two paths runs matters: a session with a live shell is sitting at a prompt and
+  // will never emit another byte on its own, so waiting for output would wait forever -- it gets
+  // the command typed in now. A session with no shell is about to get one, and that shell's prompt
+  // is the only reliable "ready" signal there is, so that one is armed and fires on it.
+  function resumeSession(name) {
+    const record = crewOfProject.find((s) => s.name === name);
+    if (!record) return;
+    selectSession(name);
+    if (awake.has(name)) runWake(activeProject, record);
+    else armWake(activeProject, record);
+  }
+
   async function handleCreate(name, opts) {
     await createProject(name, opts);
     await refreshProjects();
@@ -250,13 +319,7 @@ export default function App() {
   // agent had not started. Now the agent you picked is launched for you, through the same visible
   // typed-command path, as soon as its shell is ready.
   function autoWake(session) {
-    const timer = setTimeout(() => {
-      // Abandoned rather than fired late: if a shell took this long, you have probably started
-      // typing in it yourself, and injecting a command underneath that would be worse than
-      // leaving you to press Wake.
-      pendingWakeRef.current = null;
-    }, 8000);
-    pendingWakeRef.current = { project: session.project || activeProject, record: session, timer };
+    armWake(session.project || activeProject, session);
   }
 
   async function removeActive() {
@@ -409,6 +472,8 @@ export default function App() {
               onSelect={selectSession}
               activity={activity}
               awake={awake}
+              running={running}
+              onResume={resumeSession}
               refreshKey={crewVersion}
               onSessionsChange={setCrewOfProject}
               agents={agents}
@@ -440,6 +505,7 @@ export default function App() {
                   active={view === 'terminal' && t.key === activeKey}
                   registerSender={registerSender}
                   onActivity={noteActivity}
+                  onFreshShell={reviveSession}
                 />
               ))}
               <div className={`panel ${view === 'files' ? '' : 'is-hidden'}`}>

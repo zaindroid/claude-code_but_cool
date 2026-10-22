@@ -13,6 +13,7 @@
 // switching users properly (it calls initgroups() itself) -- used here without the login (`-`)
 // flag, so it does not also reset cwd/environment, which stay under this file's own control.
 import pty from 'node-pty';
+import { readdirSync, readFileSync } from 'node:fs';
 import { projectPath } from './projects.js';
 import { providerEnv } from './settings.js';
 
@@ -46,6 +47,33 @@ const REPLAY_BYTES = 256 * 1024;
 
 // key -> { term, viewers:Set<ws>, chunks:string[], bytes, onData, onExit, timeout, named }
 const terminals = new Map();
+
+// Protocol-level keepalive, separate from the client's own JSON heartbeat and doing a job that
+// one cannot: proving to *this* side that a viewer still exists. A browser that is closed by
+// pulling the network, sleeping, or being force-quit leaves a socket that is dead but never
+// reports it, and a dead viewer that stays in `viewers` is worse than a leak -- `viewers.size`
+// stays above zero, so the teardown clock below never arms and that shell lives until the process
+// does. One missed ping is forgiven (a tick can land mid-reconnect); two is taken as gone.
+const PING_MS = 25_000;
+setInterval(() => {
+  for (const entry of terminals.values()) {
+    for (const ws of entry.viewers) {
+      if (ws.codezAlive === false) {
+        // Fires 'close', which removes it from `viewers` and arms the grace period properly --
+        // the same path a clean disconnect takes, so there is only one teardown route to reason
+        // about.
+        ws.terminate();
+        continue;
+      }
+      ws.codezAlive = false;
+      try {
+        ws.ping();
+      } catch {
+        ws.terminate();
+      }
+    }
+  }
+}, PING_MS).unref(); // never the reason this process stays alive
 
 function terminalKey(user, { project, session, sessionId }) {
   // A named session's key is its *name*, scoped to the project and account -- stable across
@@ -87,19 +115,19 @@ export function attachTerminal(ws, user, { project, session, sessionId, cols, ro
 
   const key = terminalKey(user, { project, session, sessionId });
   let entry = terminals.get(key);
+  // The one fact the client cannot work out for itself, and the one it most needs: is the thing
+  // on the other end of this socket the shell it was talking to a moment ago, or a brand new one?
+  // Both look identical from the browser -- a socket that opened -- but they mean opposite things.
+  // A reattach means your agent is still running and mid-thought. A fresh shell means it is gone
+  // and the conversation above the prompt is history. Leaving the client to guess is what made a
+  // redeploy feel like the session died: the scrollback still showed Claude, so you typed at it.
+  const fresh = !entry;
 
   if (entry) {
-    // Reattaching: cancel any pending teardown and replay what the shell has said recently, so
-    // the new viewer sees the live state instead of an empty pane.
+    // Reattaching: cancel any pending teardown so the live shell isn't torn down underneath the
+    // viewer that just arrived.
     clearTimeout(entry.timeout);
     entry.timeout = null;
-    // Sent as its own message type, not as plain `data`, so the client can tell a repaint of
-    // history from live output. It needs to: on a *re*connect it clears the pane first so the
-    // replay is authoritative instead of stacking on the copy already there -- and it must only
-    // do that when a replay is genuinely coming. A reconnect to a terminal that no longer exists
-    // (the container was replaced, which is the common case) gets no replay, and clearing there
-    // would throw away the scrollback the person still wants to read.
-    if (entry.chunks.length) send(ws, { type: 'replay', data: entry.chunks.join('') });
   } else {
     // Read fresh on every new terminal, not cached at startup, so a settings change applies to
     // the next terminal opened without needing to restart the whole app -- an already-running
@@ -139,6 +167,19 @@ export function attachTerminal(ws, user, { project, session, sessionId, cols, ro
     terminals.set(key, entry);
   }
 
+  ws.codezAlive = true;
+  ws.on('pong', () => {
+    ws.codezAlive = true;
+  });
+
+  send(ws, { type: 'attached', fresh });
+  // Sent as its own message type, not as plain `data`, so the client can tell a repaint of
+  // history from live output. It needs to: on a *re*connect it clears the pane first so the
+  // replay is authoritative instead of stacking on the copy already there -- and it must only do
+  // that when a replay is genuinely coming. A fresh shell gets no replay, and clearing there
+  // would throw away the scrollback the person still wants to read.
+  if (!fresh && entry.chunks.length) send(ws, { type: 'replay', data: entry.chunks.join('') });
+
   entry.viewers.add(ws);
   const current = entry;
 
@@ -150,7 +191,15 @@ export function attachTerminal(ws, user, { project, session, sessionId, cols, ro
       return;
     }
     if (msg.type === 'input') current.term.write(msg.data);
-    else if (msg.type === 'resize' && msg.cols && msg.rows) {
+    else if (msg.type === 'ping') {
+      // The other half of the client's heartbeat (TerminalView). Answered rather than ignored
+      // because the answer is the whole point: it is the only thing that proves to the browser
+      // that this socket still reaches a live server. A terminal nobody is typing in sends no
+      // bytes in either direction, and a silent socket is indistinguishable from a dead one --
+      // which is what left terminals looking connected and stuck. This also keeps the connection
+      // non-idle, so nothing between here and the browser recycles it for being quiet.
+      send(ws, { type: 'pong' });
+    } else if (msg.type === 'resize' && msg.cols && msg.rows) {
       // Last resize wins when several viewers watch one terminal at different window sizes.
       // Honest about the tradeoff: tmux instead clamps to the smallest attached client, which
       // avoids one viewer seeing wrapped output, but a PTY has exactly one size and picking the
@@ -178,6 +227,60 @@ export function attachTerminal(ws, user, { project, session, sessionId, cols, ro
 // session records claim. Used by /api/sessions so the crew rail can show "awake" vs "asleep"
 // without guessing from the transcript, the same way /api/agents checks `command -v` instead of
 // trusting that the Dockerfile worked.
+// Which named sessions have a program running in the foreground right now, as opposed to sitting
+// at a bare shell prompt. A live shell is NOT the same thing as a live agent: exit Claude Code and
+// the session is still "awake" by the measure above, with nothing running in it. The crew rail
+// used to show those two states identically, which is why resuming meant knowing to type a
+// command -- the one piece of information that would have told you otherwise was never read.
+//
+// Taken from the kernel rather than by pattern-matching process names, which is both simpler and
+// not fooled by `vim claude.md`: a terminal's `tpgid` is the process group it is currently giving
+// the keyboard to. When the shell is at a prompt, that is the shell's own group. When the shell
+// has started a job, it is the job's. So "foreground job running" is exactly `tpgid != pgrp`, and
+// it costs one small read per session.
+function statOf(pid) {
+  // comm (field 2) is wrapped in parens and may itself contain spaces or parens, so everything is
+  // indexed from the LAST ')' rather than by splitting the whole line -- the classic /proc/stat
+  // parsing bug.
+  const raw = readFileSync(`/proc/${pid}/stat`, 'utf8');
+  const f = raw.slice(raw.lastIndexOf(')') + 2).split(' ');
+  return { ppid: Number(f[1]), pgrp: Number(f[2]), tpgid: Number(f[5]) };
+}
+
+function hasForegroundJob(rootPid) {
+  // rootPid is the `su` we spawned; the shell is its child, and the shell is what owns the
+  // terminal's foreground group.
+  for (const name of readdirSync('/proc')) {
+    if (!/^\d+$/.test(name)) continue;
+    let st;
+    try {
+      st = statOf(name);
+    } catch {
+      continue; // the process ended between readdir and read -- normal, not an error
+    }
+    if (st.ppid !== rootPid) continue;
+    return st.tpgid > 0 && st.tpgid !== st.pgrp;
+  }
+  return false;
+}
+
+export function busySessionNames(user) {
+  const prefix = `${user.id}:`;
+  const names = new Set();
+  for (const [key, entry] of terminals) {
+    if (!entry.named || !key.startsWith(prefix)) continue;
+    try {
+      if (hasForegroundJob(entry.term.pid)) names.add(key.slice(key.indexOf(':s:') + 3));
+    } catch {
+      // No /proc (a non-Linux dev machine) means this signal is simply unavailable. Reported as
+      // "not running" rather than guessed, which costs a visible Resume button on a session that
+      // may already have an agent -- a harmless wrong offer, where the opposite mistake would
+      // hide the button on a session that genuinely needs it.
+    }
+  }
+  return names;
+}
+
 export function liveSessionNames(user) {
   const prefix = `${user.id}:`;
   const names = new Set();

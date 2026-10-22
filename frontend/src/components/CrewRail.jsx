@@ -24,6 +24,8 @@ export default function CrewRail({
   project,
   activeSession,
   onSelect,
+  onResume,
+  running,
   activity,
   awake,
   refreshKey,
@@ -79,7 +81,11 @@ export default function CrewRail({
   function stateOf(s) {
     const last = activity?.[s.name];
     if (last && Date.now() - last < 1500) return 'working';
-    if (awake?.has(s.name)) return 'resting';
+    // "Is my agent up?" -- deliberately NOT "is a shell alive?". A shell with nothing running in
+    // it is an implementation detail nobody asked about, and showing it as awake was actively
+    // misleading: the face looked ready while the thing you came to talk to was gone. A session
+    // with no agent reads as asleep, which is also exactly when Resume appears.
+    if (running?.has(s.name)) return 'resting';
     return 'asleep';
   }
 
@@ -87,6 +93,11 @@ export default function CrewRail({
   // all-Claude crew there is nothing to tell apart, so the badge would be decoration; the moment
   // you mix, the distinction is real and every face gets marked.
   const mixed = new Set(sessions.map((s) => s.agent || 'claude')).size > 1;
+
+  // The selected session, when it has no agent running. `null` the rest of the time, which is what
+  // hides the Resume button.
+  const selected = sessions.find((s) => s.name === activeSession) || null;
+  const resumable = selected && !running?.has(selected.name) ? selected : null;
 
   function agentLabel(id) {
     return agents.find((a) => a.id === (id || 'claude'))?.label || id || 'claude';
@@ -169,7 +180,7 @@ export default function CrewRail({
                 setRenameDraft(s.name);
                 setRenaming(s.id);
               }}
-              title={`${s.name} — ${state} · ${agentLabel(s.agent)}${s.origin?.kind === 'local' ? ` · teleported from ${s.origin.machine || 'another machine'}` : ''}\nDouble-click to rename`}
+              title={`${s.name} — ${state === 'asleep' && awake?.has(s.name) ? 'no agent running (shell open)' : state} · ${agentLabel(s.agent)}${s.origin?.kind === 'local' ? ` · teleported from ${s.origin.machine || 'another machine'}` : ''}\nClick to switch · double-click to rename`}
             >
               <CrewAvatar name={s.name} state={state} size={34} />
               <span className="crew-member-name">{s.name}</span>
@@ -241,6 +252,28 @@ export default function CrewRail({
           </button>
         )}
       </div>
+
+      {/* Resume, as a button rather than as a command you have to know.
+          Deliberately separate from the faces: clicking a face only switches to it, so there is
+          no way to start an agent by misclicking, and no way to be unsure which one you just
+          started -- it names the session. Shown only while the selected session has no agent
+          running, so it disappears the moment it has done its job rather than sitting there
+          inviting a second one. */}
+      {resumable && (
+        <button
+          type="button"
+          className="crew-resume"
+          onClick={() => onResume?.(resumable.name)}
+          title={
+            resumable.hasHistory
+              ? `Pick ${resumable.name} up where it stopped (${agentLabel(resumable.agent)} --resume)`
+              : `Start ${agentLabel(resumable.agent)} in ${resumable.name}`
+          }
+        >
+          <span aria-hidden="true">▸</span>
+          {resumable.hasHistory ? 'Resume' : 'Start'} {resumable.name}
+        </button>
+      )}
 
       {error && (
         <button type="button" className="crew-error" onClick={() => setError(null)} title="Dismiss" role="alert">

@@ -22,7 +22,7 @@ import {
 import { listUsers, createUser, setUserQuota, reconcileOsUsers } from './users.js';
 import { listProjects, createProject, projectPath } from './projects.js';
 import { listDir, readFile } from './files.js';
-import { attachTerminal, liveSessionNames } from './pty.js';
+import { attachTerminal, liveSessionNames, busySessionNames } from './pty.js';
 import { readSettingsForClient, writeSettings, clearAuthToken, PRESETS } from './settings.js';
 import { duBytes, PLATFORM_QUOTA_BYTES, GB } from './diskUsage.js';
 import { listAgents, getAgent } from './agents.js';
@@ -325,13 +325,18 @@ app.get('/api/sessions', (req, res) => {
   // They mean genuinely different things and the crew rail shows them differently:
   //   hasHistory -- a transcript exists on disk, so this session has really run and can --resume
   //   awake      -- a shell is alive for it right now, so it is running or waiting on input
+  //   running    -- that shell has a program in the foreground, i.e. the agent is actually up.
+  //                 Distinct from awake on purpose: exit your agent and the shell lives on with
+  //                 nothing in it, which is precisely the state the Resume button exists for.
   const awake = liveSessionNames(req.user);
+  const running = busySessionNames(req.user);
   const sessions = listAllSessions(req.user).map((s) => {
     const dir = projectPath(req.user, s.project);
     return {
       ...s,
       hasHistory: dir ? hasTranscript(req.user, dir, s) : false,
       awake: awake.has(s.name),
+      running: running.has(s.name),
     };
   });
   res.json({ sessions });
