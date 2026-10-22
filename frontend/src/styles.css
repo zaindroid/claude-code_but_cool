@@ -1,38 +1,72 @@
+/* Codez is a console for a crew of small creatures.
+ *
+ * The whole visual idea is one tension: soft round faces against a hard monospace terminal. So the
+ * terminal is treated as a recessed physical screen -- dark in BOTH themes, inset into a flat
+ * console surface -- and the crew sit on that surface above it. Light mode changes the console, not
+ * the screen, the way a real device would.
+ *
+ * Two deliberate constraints:
+ *   - The shell is near-monochrome. Blobatar generates its own vivid per-name palette, so any
+ *     colourful chrome would compete with the one thing on screen that is supposed to be
+ *     colourful. The faces are the colour; everything around them gets out of the way.
+ *   - Lime (--live) means exactly one thing, everywhere, forever: an agent is working. It is never
+ *     used for emphasis, hover, focus or decoration. A colour that means one thing is readable at
+ *     a glance from across a room, which is the entire job of the crew rail.
+ *
+ * Type is monospace throughout, with hierarchy carried by size, weight and tracking alone. This is
+ * a terminal product whose interface is almost entirely names, labels and commands -- fixed-width
+ * scans faster for that, and it keeps the chrome speaking the same language as the screen. It is
+ * also a system stack on purpose: the previous build linked Inter and JetBrains Mono from Google
+ * Fonts while the CSP blocked both `fonts.googleapis.com` (style-src) and the font files
+ * (font-src), so the app had silently been running on fallbacks the whole time. Self-contained
+ * fonts need no third-party request, which also suits a deployment that is meant to stay inside
+ * one private network. */
 :root {
-  --bg: #1a1815;
-  --bg-elevated: #201d19;
-  --panel: #24211d;
-  --panel-hover: #2b2723;
-  --border: rgba(232, 228, 217, 0.08);
-  --border-strong: rgba(232, 228, 217, 0.14);
-  --text: #e8e4d9;
-  --text-muted: #a39e8f;
-  --text-faint: #6b6558;
-  --accent: #c96442;
-  --accent-hover: #d97650;
-  --accent-soft: rgba(201, 100, 66, 0.14);
-  --danger: #e0685a;
-  --radius: 10px;
-  --radius-sm: 7px;
-  --shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
-  --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  --bg: #141722;
+  --bg-elevated: #1b1f2c;
+  --panel: #1f2432;
+  --panel-hover: #272d3d;
+  /* The screen. Deeper than anything else so it reads as recessed rather than as another panel. */
+  --screen: #0b0d13;
+  --border: rgba(230, 232, 240, 0.09);
+  --border-strong: rgba(230, 232, 240, 0.17);
+  --text: #e6e8f0;
+  --text-muted: #949cb0;
+  --text-faint: #626a7d;
+  --accent: #7c5cff;
+  --accent-hover: #8f73ff;
+  --accent-soft: rgba(124, 92, 255, 0.16);
+  --live: #b8ff3c;
+  --live-soft: rgba(184, 255, 60, 0.14);
+  --danger: #ff6b5a;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
+  --font: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --font-mono: var(--font);
 }
 
 :root[data-theme="light"] {
-  --bg: #faf9f5;
-  --bg-elevated: #ffffff;
-  --panel: #f3f1ea;
-  --panel-hover: #ece9df;
-  --border: rgba(61, 57, 41, 0.08);
-  --border-strong: rgba(61, 57, 41, 0.14);
-  --text: #3d3929;
-  --text-muted: #7a7566;
-  --text-faint: #a39e8f;
-  --accent: #c96442;
-  --accent-hover: #b8553a;
-  --accent-soft: rgba(201, 100, 66, 0.1);
-  --shadow: 0 8px 30px rgba(61, 57, 41, 0.1);
+  /* Cool paper rather than cream: the warm-cream-plus-clay pairing is the single most recognisable
+     generated-design palette, and it is what this app used to be. */
+  --bg: #e9eae4;
+  --bg-elevated: #f6f6f2;
+  --panel: #f1f1ec;
+  --panel-hover: #e4e5de;
+  --border: rgba(20, 23, 34, 0.1);
+  --border-strong: rgba(20, 23, 34, 0.2);
+  --text: #141722;
+  --text-muted: #5a6173;
+  --text-faint: #8c93a3;
+  --accent: #5b3df5;
+  --accent-hover: #4a2ee0;
+  --accent-soft: rgba(91, 61, 245, 0.1);
+  /* Lime at full brightness fails contrast on paper, so the light theme carries the same meaning
+     at a darker value rather than switching to a different hue and breaking the one-colour rule. */
+  --live: #5e9400;
+  --live-soft: rgba(94, 148, 0, 0.14);
+  --danger: #d6422f;
+  --shadow: 0 10px 34px rgba(20, 23, 34, 0.12);
 }
 
 * { box-sizing: border-box; }
@@ -125,28 +159,111 @@ button { cursor: pointer; }
 
 /* ---------------------------------------------------------------- shell layout */
 
-.app-shell { display: flex; height: 100%; }
-
-.sidebar {
-  width: 232px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-elevated);
-  border-right: 1px solid var(--border);
-  transition: width 0.2s ease, opacity 0.2s ease;
-  overflow: hidden;
+/* One strip, one screen, one status line. There is no sidebar, no tab bar and no toolbar, and
+   that absence is the design rather than an omission: a person with a working memory under load
+   should not have to scan four regions of chrome to find the one control they want. Everything
+   that is not the screen or the crew lives behind a single key (⌘K), so there is exactly one place
+   to look and one thing to remember.
+   The old .sidebar / .tab-bar / .agent-bar rules are gone with their markup. */
+.app-shell {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+  background: var(--bg);
 }
-.sidebar.is-collapsed { width: 0; border-right-color: transparent; }
 
-.sidebar-head {
+.strip {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 16px 14px 10px;
+  gap: 18px;
+  padding: 10px 16px;
+  min-height: 56px;
   flex-shrink: 0;
 }
-.sidebar-title { font-size: 11.5px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); }
+
+.strip-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  min-width: 0;
+}
+.strip-brand b { font-weight: 700; color: var(--text); }
+.strip-brand span { color: var(--text-faint); }
+.strip-brand button {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: var(--text-muted);
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.strip-brand button:hover { color: var(--accent); }
+
+.strip-spacer { flex: 1; min-width: 8px; }
+
+/* The ⌘K affordance. Looks like a key because pressing the key is the intended path; clicking it
+   is the fallback for anyone who does not know that yet, which is most people the first time. */
+.strip-k {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text-muted);
+  font-size: 12px;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.strip-k:hover { border-color: var(--accent); color: var(--text); }
+.strip-k kbd {
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+}
+
+/* The screen: the one object on the page with real depth. Dark in both themes, because it is a
+   display inset into a console rather than a panel of the page -- which is also why the inset
+   highlight sits on top and the shadow sits inside. */
+.stage { position: relative; min-height: 0; padding: 0 16px 10px; display: grid; grid-template-rows: 1fr auto; gap: 8px; }
+
+.screen {
+  position: relative;
+  min-height: 0;
+  border-radius: var(--radius);
+  background: var(--screen);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), inset 0 0 0 1px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+
+/* The status line. Columns, not a dot-joined meta string: fixed positions mean the eye learns
+   where each fact lives and stops re-reading the whole line to find one of them. */
+.status {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 16px;
+  padding: 0 4px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  min-height: 18px;
+}
+.status-who { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-state { display: inline-flex; align-items: center; gap: 6px; }
+.status-live { color: var(--live); }
+.status-hint { border: none; background: transparent; color: var(--text-faint); font: inherit; padding: 0; }
+.status-hint:hover { color: var(--accent); }
 
 .icon-btn {
   display: flex;
@@ -243,60 +360,116 @@ button { cursor: pointer; }
 .usage-bar-fill.is-full { background: var(--danger); }
 .usage-bar-label { font-size: 11px; color: var(--text-faint); }
 
-/* ---------------------------------------------------------------- main area */
+/* ---------------------------------------------------------------- inside the screen */
 
-.main-area { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-
-.main-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 18px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.main-head-left { display: flex; align-items: center; gap: 20px; min-width: 0; }
-.main-project-name { font-size: 13.5px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
-.main-head-right { display: flex; align-items: center; gap: 4px; }
-
-.tab-bar { display: flex; gap: 2px; background: var(--panel); border-radius: 8px; padding: 2px; }
-.tab-btn {
-  padding: 6px 13px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 12.5px;
-  font-weight: 550;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-.tab-btn:hover { color: var(--text); }
-.tab-btn.is-active { background: var(--bg-elevated); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
-
-.panel-area { flex: 1; position: relative; min-height: 0; }
-
-.panel, .terminal-pane {
-  position: absolute;
-  inset: 0;
-}
+.panel, .terminal-pane { position: absolute; inset: 0; }
 .panel.is-hidden, .terminal-pane.is-hidden { display: none; }
 
-.terminal-pane { padding: 12px 16px; background: var(--bg); }
+.terminal-pane { padding: 12px 14px; background: var(--screen); }
 .terminal-pane .xterm { height: 100%; }
 
+/* Files and preview render inside the same screen rather than on their own page: it is one device
+   showing different things, so the frame never moves and there is nothing to re-locate. */
+.panel { background: var(--screen); overflow: auto; }
+
+/* An empty screen is an invitation, so it says the one thing to do next and nothing else. */
 .empty-state {
-  flex: 1;
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   align-items: center;
   justify-content: center;
-  color: var(--text-faint);
-  font-size: 14px;
+  color: var(--text-muted);
+  font-size: 13px;
   text-align: center;
   padding: 0 24px;
 }
-.empty-settings-link { border: none; background: transparent; color: var(--accent); font-size: 13px; font-weight: 600; }
+.empty-state p { margin: 0; max-width: 46ch; line-height: 1.6; }
+.empty-settings-link {
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 7px 14px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.empty-settings-link:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ---------------------------------------------------------------- command palette */
+/* The single entry point for everything that is not the screen or the crew. One list, filtered by
+   typing, keyboard-first -- so the answer to "where is X" is always the same action instead of a
+   different corner of the UI each time. */
+.palette-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(8, 10, 16, 0.55);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh 16px 16px;
+}
+.palette {
+  width: min(560px, 100%);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  /* The one scripted entrance in the app, and it earns its place by showing where the panel came
+     from in response to a keypress the person just made. */
+  animation: paletteIn 0.14s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+@keyframes paletteIn {
+  from { opacity: 0; transform: translateY(-6px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+.palette input {
+  width: 100%;
+  padding: 15px 16px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+.palette input::placeholder { color: var(--text-faint); }
+.palette-list { list-style: none; margin: 0; padding: 6px; max-height: 44vh; overflow-y: auto; }
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+}
+.palette-item.is-sel { background: var(--accent-soft); color: var(--text); }
+.palette-item-sub { margin-left: auto; color: var(--text-faint); font-size: 11.5px; white-space: nowrap; }
+.palette-empty { padding: 18px 16px; color: var(--text-faint); font-size: 12.5px; }
+.palette-foot {
+  display: flex;
+  gap: 14px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .palette { animation: none; }
+}
 
 /* ---------------------------------------------------------------- settings */
 
@@ -580,47 +753,287 @@ button { cursor: pointer; }
 .lesson-item em { color: var(--text-faint); font-style: normal; font-size: 11px; }
 .lesson-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
-/* ---------------------------------------------------------------- token HUD */
-
-.token-hud {
-  position: fixed;
-  right: 18px;
-  bottom: 18px;
-  z-index: 25;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  font-size: 12px;
-  min-width: 180px;
-  overflow: hidden;
-}
-.token-hud-head {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 9px 12px;
+/* ---------------------------------------------------------------- tab row */
+/* Kept because ProjectTools still uses it for its four panes. The floating token HUD's rules used
+   to live here; both it and the sidebar are gone, and so are their styles -- the usage number now
+   sits in the status line instead. */
+.tab-bar { display: flex; gap: 2px; background: var(--panel); border-radius: var(--radius-sm); padding: 2px; }
+.tab-btn {
+  padding: 6px 13px;
   border: none;
+  border-radius: 6px;
   background: transparent;
   color: var(--text-muted);
-  font-family: var(--font-mono);
+  font: inherit;
+  font-size: 12.5px;
+  transition: background 0.15s ease, color 0.15s ease;
 }
-.token-hud-head:hover { color: var(--text); }
-.token-hud-toggle { font-size: 9px; color: var(--text-faint); }
-.token-hud-body { border-top: 1px solid var(--border); padding: 6px 12px 10px; display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; }
-.token-hud-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-family: var(--font-mono); color: var(--text-muted); font-size: 11.5px; }
-.token-hud-project { color: var(--text); font-weight: 600; }
-.token-hud-untracked { color: var(--text-faint); font-style: italic; }
-.token-hud.is-collapsed .token-hud-body { display: none; }
+.tab-btn:hover { color: var(--text); }
+.tab-btn.is-active { background: var(--bg-elevated); color: var(--text); }
+
+/* File browser leaf labels. These were referenced by FileBrowser and never styled -- harmless
+   while the tree lived on its own page, more visible now that it shares the screen. */
+.fb-dir { color: var(--text); }
+.fb-file { color: var(--text-muted); }
+.fb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------------------------------------------------------------- responsive */
 
+/* The strip is the only thing that needs to give way on a narrow screen: the crew scrolls
+   horizontally already, so the brand and the ⌘K label are what get shortened. */
 @media (max-width: 760px) {
-  .sidebar { position: fixed; inset: 0 auto 0 0; z-index: 20; width: 240px; box-shadow: var(--shadow); }
-  .sidebar.is-collapsed { width: 0; }
+  .strip { gap: 10px; padding: 8px 10px; }
+  .stage { padding: 0 10px 8px; }
   .fb-tree { width: 180px; }
-  .main-head { padding: 10px 12px; }
-  .main-project-name { display: none; }
+  .strip-brand button { max-width: 12ch; }
+  .strip-k { padding: 6px 9px; }
+  .strip-k span { display: none; }
+  .crew-member-name { max-width: 9ch; }
 }
+
+/* ---------------------------------------------------------------- crew rail */
+/* The named-agent rail. Three rules govern everything in here:
+   1. Every animation is transform/opacity/filter only, and every moving decoration is an
+      absolutely-positioned pseudo-element. Nothing here can change the size of anything, because
+      this page has a documented history of a live-only whole-page flicker caused by repeated
+      reflow (see AGENT_CONTEXT/KNOWN_ISSUES.md) and a rail full of animated faces is exactly the
+      thing that would get blamed for it next.
+   2. Crew members have a fixed footprint. A name going from "a" to 32 characters must not reflow
+      the rail, so the label is width-clamped and ellipsised rather than left to size itself.
+   3. State colours are their own tokens, themed like everything else, so "working" reads the same
+      way in light mode without a second set of hardcoded hexes. */
+
+/* Crew state colours are aliases, not new values: "working" IS the one live colour, so it has to
+   be the same token the rest of the app reserves for that meaning. Resting and asleep are
+   deliberately colourless -- a resting agent is not a second kind of alert, it is just present. */
+:root {
+  --crew-working: var(--live);
+  --crew-resting: var(--text-muted);
+  --crew-asleep: var(--text-faint);
+}
+
+/* Inline in the strip, horizontal, with no frame of its own -- the faces sit directly on the
+   console surface like magnets on a board. */
+.crew-rail { display: flex; align-items: center; gap: 10px; min-width: 0; }
+
+.crew-faces {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* A stable gutter so the rail cannot twitch sideways the moment it gains enough members to
+     scroll -- the same class of one-pixel jitter the terminal's resize loop was causing. */
+  scrollbar-gutter: stable;
+  min-width: 0;
+}
+
+.crew-member-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  max-width: 190px;
+  padding: 5px 12px 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.crew-member-btn:hover { background: var(--panel); color: var(--text); transform: translateY(-1px); }
+.crew-member-btn.is-active { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+
+.crew-member-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The face itself. The fixed box is set inline by CrewAvatar (it has to match the `size` prop);
+   this only owns how it sits and how it reacts. */
+.crew-face {
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  position: relative;
+  transition: filter 0.2s ease;
+}
+.crew-face :where(img, svg) { display: block; }
+
+/* Working: a halo that breathes. On a pseudo-element with its own compositing, so the pulse can
+   never push the avatar or its neighbours around. */
+.crew-face-working::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1.5px solid var(--crew-working);
+  opacity: 0.55;
+  animation: crewPulse 1.6s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+@keyframes crewPulse {
+  0%, 100% { transform: scale(1); opacity: 0.5; }
+  50% { transform: scale(1.12); opacity: 0.14; }
+}
+
+.crew-face-asleep { filter: grayscale(0.75) opacity(0.6); }
+.crew-member-btn:hover .crew-face-asleep { filter: grayscale(0.2) opacity(0.9); }
+
+/* Status dot, tucked against the avatar. Absolute, so it is outside layout entirely. */
+.crew-dot {
+  position: absolute;
+  left: 30px;
+  top: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 2px solid var(--bg);
+  background: var(--crew-asleep);
+}
+.crew-dot-working { background: var(--crew-working); }
+.crew-dot-resting { background: var(--crew-resting); }
+.crew-dot-asleep { background: var(--crew-asleep); }
+
+/* Add button and the inline naming form. */
+.crew-add {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 17px;
+  line-height: 1;
+  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.16s ease, border-color 0.16s ease;
+}
+.crew-add:hover { color: var(--accent); border-color: var(--accent); transform: rotate(90deg); }
+
+.crew-add-form,
+.crew-rename { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
+.crew-add-form input,
+.crew-rename input {
+  width: 110px;
+  padding: 6px 11px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+.crew-rename input { width: 96px; }
+
+/* Errors here are a short sentence explaining a rule, not a stack trace, so they read as a chip
+   next to the thing that produced them. Click dismisses. */
+.crew-error {
+  flex: 0 1 auto;
+  max-width: 40ch;
+  padding: 5px 10px;
+  border: 1px solid var(--danger);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--danger);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Respect the setting, and not just as a courtesy: the breathing halo on several faces at once is
+   exactly the kind of persistent motion that triggers vestibular symptoms, and this page already
+   has a flicker complaint on record. */
+@media (prefers-reduced-motion: reduce) {
+  .crew-face-working::after { animation: none; opacity: 0.45; }
+  .crew-member-btn:hover { transform: none; }
+  .crew-add:hover { transform: none; }
+}
+
+/* ---------------------------------------------------------------- teleport card */
+
+.teleport-card { width: min(640px, 100%); max-height: 86vh; overflow-y: auto; }
+
+.tp-steps { list-style: none; counter-reset: tp; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 22px; }
+/* Numbered because this genuinely is a sequence -- you cannot run the second command before the
+   first has given the machine a token. The markers are the information, not decoration. */
+.tp-steps > li { counter-increment: tp; position: relative; padding-left: 30px; }
+.tp-steps > li::before {
+  content: counter(tp);
+  position: absolute;
+  left: 0;
+  top: 1px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+.tp-steps h3 { margin: 0 0 9px; font-size: 13px; font-weight: 600; color: var(--text); }
+.tp-steps p { margin: 6px 0 0; }
+
+.tp-mint { display: flex; gap: 7px; }
+.tp-mint input {
+  flex: 1;
+  padding: 8px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+.tp-mint input:focus { border-color: var(--accent); }
+.tp-mint button, .tp-fresh button, .tp-cmd button, .tp-tokens button {
+  padding: 7px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.tp-mint button { border-color: var(--accent); color: var(--accent); }
+.tp-cmd button:hover, .tp-fresh button:hover, .tp-mint button:hover { background: var(--accent-soft); color: var(--accent); }
+.tp-tokens button:hover { border-color: var(--danger); color: var(--danger); }
+
+.tp-fresh { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 11px; border: 1px solid var(--accent); border-radius: var(--radius-sm); background: var(--accent-soft); }
+.tp-fresh code { flex: 1; min-width: 0; font-size: 11.5px; word-break: break-all; color: var(--text); }
+.tp-fresh p { flex-basis: 100%; margin: 0; font-size: 11px; color: var(--text-muted); }
+
+.tp-tokens { list-style: none; margin: 11px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.tp-tokens li { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--radius-sm); background: var(--panel); font-size: 12px; }
+.tp-tokens li > span:first-child { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-token-when { color: var(--text-faint); font-size: 11px; }
+
+.tp-cmds { display: flex; flex-direction: column; gap: 9px; }
+.tp-cmd { display: grid; grid-template-columns: 1fr auto; gap: 8px 10px; align-items: center; }
+.tp-cmd code {
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--screen);
+  color: #e6e8f0;
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.tp-cmd p { grid-column: 1 / -1; margin: 0; font-size: 11.5px; color: var(--text-faint); }
+
+.status-tokens { margin-left: 14px; color: var(--text-faint); }

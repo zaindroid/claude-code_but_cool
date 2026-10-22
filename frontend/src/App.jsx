@@ -1,42 +1,78 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// blobatar's idle motion and expression morphs are a CSS layer: registered custom properties plus
+// transitions on them. Imported once, here, because without it every face renders correctly but
+// completely still. It animates transform and fill only -- never anything affecting layout, which
+// matters on this page (see AGENT_CONTEXT/KNOWN_ISSUES.md).
+import 'blobatar/motion.css';
 import Login from './components/Login.jsx';
-import Sidebar from './components/Sidebar.jsx';
 import TerminalView from './components/TerminalView.jsx';
 import FileBrowser from './components/FileBrowser.jsx';
 import Preview from './components/Preview.jsx';
 import Settings from './components/Settings.jsx';
 import Admin from './components/Admin.jsx';
 import NewProjectModal from './components/NewProjectModal.jsx';
-import AgentBar from './components/AgentBar.jsx';
+import CrewRail from './components/CrewRail.jsx';
+import CommandPalette from './components/CommandPalette.jsx';
+import TeleportCard from './components/TeleportCard.jsx';
 import ProjectTools from './components/ProjectTools.jsx';
-import TokenHud from './components/TokenHud.jsx';
-import { authStatus, logout, listProjects, createProject } from './api.js';
+import {
+  authStatus,
+  logout,
+  listProjects,
+  createProject,
+  listCrew,
+  sessionLaunchCommand,
+  deleteSession,
+  getTokenUsage,
+} from './api.js';
 
-const TABS = [
-  { id: 'terminal', label: 'Terminal' },
-  { id: 'files', label: 'Files' },
-  { id: 'preview', label: 'Preview' },
-];
+// The agents' own real login commands, same values as backend/src/agents.js. Codez implements auth
+// for none of them -- this types the tool's own command into the tool's own terminal.
+const LOGIN_CMD = { claude: 'claude', opencode: 'opencode auth login', codex: 'codex', deepcode: 'deepcode provider set' };
+
+function formatTokens(n) {
+  if (!n) return '0';
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+  return String(n);
+}
+
+// One terminal's identity. A project keeps its own plain terminal (session null) and each named
+// crew member gets one alongside it, so a project can have several live at once -- which is what
+// "parallel" means here.
+const termKey = (project, session) => (session ? `${project}::${session}` : project);
 
 export default function App() {
   const [authed, setAuthed] = useState(null);
   const [role, setRole] = useState(null);
   const [projects, setProjects] = useState([]);
   const [activeProject, setActiveProject] = useState(null);
-  // Every project whose terminal has been opened at least once stays mounted (in the background,
-  // hidden) so switching projects doesn't kill a running `claude` session -- the same reason a
-  // real terminal multiplexer keeps other panes alive while you're looking at one of them.
-  const [openTerminals, setOpenTerminals] = useState([]);
-  const [tab, setTab] = useState('terminal');
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [openTerms, setOpenTerms] = useState([]); // [{ key, project, session }]
+  const [activeKey, setActiveKey] = useState(null);
+  const [activeSessionByProject, setActiveSessionByProject] = useState({});
+  const [view, setView] = useState('terminal'); // what the screen is showing
   const [theme, setTheme] = useState(() => localStorage.getItem('codez-theme') || 'dark');
+  const [focus, setFocus] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
-  // One send-function per open project's live terminal, registered by TerminalView itself (see
-  // its own comment) -- how AgentBar's guided-mode buttons type a real command into the right
-  // terminal without App needing to know anything about WebSockets.
+  const [teleportOpen, setTeleportOpen] = useState(false);
+  const [crewOfProject, setCrewOfProject] = useState([]);
+  // sessionName -> timestamp of the last real output from its PTY. Drives the working face.
+  // Held in a ref and mirrored into state on a slow tick rather than set per chunk: a chatty agent
+  // emits output many times a second, and re-rendering the rail that often is both wasteful and,
+  // on this page specifically, a flicker risk.
+  const activityRef = useRef({});
+  const [activity, setActivity] = useState({});
+  const [awake, setAwake] = useState(() => new Set());
+  const [crewVersion, setCrewVersion] = useState(0);
+  // Real token usage, parsed from Claude Code's own transcripts server-side (tokenUsage.js) --
+  // the same accounting `/cost` uses, not an estimate from watching output. It lives in the status
+  // line now rather than in a floating HUD: the old HUD was one of the elements the layout-shift
+  // probe named repeatedly, and a number this quiet does not need to float over the screen.
+  const [usage, setUsage] = useState([]);
   const sendersRef = useRef({});
 
   useEffect(() => {
@@ -68,10 +104,84 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Who has a live shell right now, asked of the server rather than inferred locally: a session can
+  // be awake because of something that happened in another browser, on another device, or because
+  // it was teleported in while this tab sat open.
+  useEffect(() => {
+    if (!authed) return undefined;
+    let cancelled = false;
+    const poll = () =>
+      listCrew()
+        .then((r) => !cancelled && setAwake(new Set((r.sessions || []).filter((s) => s.awake).map((s) => s.name))))
+        .catch(() => {});
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [authed, crewVersion]);
+
+  // The slow mirror of activityRef. 400ms is fast enough that a face lights up while its agent is
+  // talking and settles shortly after it stops, and slow enough that the rail re-renders a couple
+  // of times a second instead of dozens.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const snap = activityRef.current;
+      if (Object.keys(snap).some((k) => Date.now() - snap[k] < 2000)) setActivity({ ...snap });
+    }, 400);
+    return () => clearInterval(id);
+  }, []);
+
+  const noteActivity = useCallback((session) => {
+    activityRef.current = { ...activityRef.current, [session]: Date.now() };
+  }, []);
+
+  // Polled slowly and only while signed in: this reads transcript files on the server, so asking
+  // more often than a person could notice would be pure cost for no information.
+  useEffect(() => {
+    if (!authed) return undefined;
+    let cancelled = false;
+    const poll = () => getTokenUsage().then((r) => !cancelled && setUsage(r.usage || [])).catch(() => {});
+    poll();
+    const id = setInterval(poll, 20000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [authed, crewVersion]);
+
+  // ⌘K / Ctrl+K from anywhere. Registered on the window rather than on an element because the
+  // whole point is that it works without first clicking the right part of the page -- including
+  // while the terminal has focus, which is most of the time.
+  useEffect(() => {
+    function onKey(e) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  function openTerm(project, session) {
+    const key = termKey(project, session);
+    setOpenTerms((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, project, session }]));
+    setActiveKey(key);
+    setView('terminal');
+    return key;
+  }
+
   function selectProject(name) {
     setActiveProject(name);
-    setTab('terminal');
-    setOpenTerminals((prev) => (prev.includes(name) ? prev : [...prev, name]));
+    openTerm(name, activeSessionByProject[name] || null);
+  }
+
+  function selectSession(session) {
+    if (!activeProject) return;
+    setActiveSessionByProject((prev) => ({ ...prev, [activeProject]: session }));
+    openTerm(activeProject, session);
   }
 
   async function handleCreate(name, opts) {
@@ -81,17 +191,118 @@ export default function App() {
     setNewProjectOpen(false);
   }
 
-  function registerSender(project, sendFn) {
-    if (sendFn) sendersRef.current[project] = sendFn;
-    else delete sendersRef.current[project];
+  function registerSender(key, sendFn) {
+    if (sendFn) sendersRef.current[key] = sendFn;
+    else delete sendersRef.current[key];
+  }
+
+  const activeSession = activeProject ? activeSessionByProject[activeProject] || null : null;
+  const activeRecord = crewOfProject.find((s) => s.name === activeSession) || null;
+
+  // Types a real command into the live terminal, which is the same path a keystroke takes. Kept
+  // this way on purpose: what runs is always something the person could have typed and can see.
+  function typeInto(session, command) {
+    sendersRef.current[termKey(activeProject, session)]?.(`${command}\r`);
+  }
+
+  async function wake({ fork = false } = {}) {
+    if (!activeRecord) return;
+    const { command } = await sessionLaunchCommand(activeProject, activeRecord.id, { fork });
+    typeInto(activeSession, command);
+    setCrewVersion((v) => v + 1);
+  }
+
+  async function removeActive() {
+    if (!activeRecord) return;
+    if (
+      !window.confirm(
+        `Remove "${activeRecord.name}" from the crew?\n\nIts conversation history stays on disk — adding a session with this name again resumes it.`
+      )
+    )
+      return;
+    await deleteSession(activeProject, activeRecord.id);
+    setActiveSessionByProject((prev) => ({ ...prev, [activeProject]: null }));
+    openTerm(activeProject, null);
+    setCrewVersion((v) => v + 1);
   }
 
   async function handleLogout() {
     await logout();
     setAuthed(false);
-    setOpenTerminals([]);
+    setOpenTerms([]);
+    setActiveKey(null);
     setActiveProject(null);
   }
+
+  // Every action in the app, in one list. Declaration order is the ranking the palette shows, so
+  // the things you reach for most often are first and the destructive one is last.
+  const commands = useMemo(() => {
+    const list = [];
+    if (activeRecord) {
+      list.push({ id: 'wake', label: `Wake ${activeRecord.name}`, hint: 'start or resume', keywords: 'run start resume claude', run: () => wake() });
+      if (activeRecord.hasHistory)
+        list.push({
+          id: 'fork',
+          label: `Fork ${activeRecord.name}`,
+          hint: 'new id, same history',
+          keywords: 'branch copy diverge',
+          run: () => wake({ fork: true }),
+        });
+    }
+    list.push({ id: 'teleport', label: 'Teleport a session here', hint: 'from another machine', keywords: 'move sync import cli token', run: () => setTeleportOpen(true) });
+    list.push({
+      id: 'new-agent',
+      label: 'Add an agent',
+      hint: 'names it, gives it a face',
+      keywords: 'crew session new create',
+      // Focus mode hides the rail, so leave it first -- otherwise this command would appear to do
+      // nothing at all. The timeout is for the rail to mount before the click lands on it.
+      run: () => {
+        setFocus(false);
+        setTimeout(() => document.querySelector('.crew-add')?.click(), 30);
+      },
+    });
+
+    for (const s of crewOfProject) {
+      if (s.name === activeSession) continue;
+      list.push({ id: `go-${s.id}`, label: `Go to ${s.name}`, hint: awake.has(s.name) ? 'awake' : 'asleep', keywords: 'switch agent crew', run: () => selectSession(s.name) });
+    }
+    if (activeSession) list.push({ id: 'go-plain', label: 'Go to the plain terminal', hint: activeProject, keywords: 'shell bash switch', run: () => selectSession(null) });
+
+    for (const p of projects) {
+      if (p.name === activeProject) continue;
+      list.push({ id: `proj-${p.name}`, label: `Open ${p.name}`, hint: 'project', keywords: 'switch project folder', run: () => selectProject(p.name) });
+    }
+    list.push({ id: 'new-project', label: 'New project', hint: 'folder + agent', keywords: 'create add', run: () => setNewProjectOpen(true) });
+
+    list.push({ id: 'files', label: 'Browse files', keywords: 'tree directory open', run: () => setView('files') });
+    list.push({ id: 'preview', label: 'Preview a port', keywords: 'web server localhost', run: () => setView('preview') });
+    list.push({ id: 'terminal', label: 'Back to the terminal', keywords: 'shell screen', run: () => setView('terminal') });
+
+    // The agent's own login command, typed into the live terminal. This is what the old guided
+    // AgentBar existed for; it survives as one palette entry instead of a permanent bar.
+    const projectAgent = projects.find((p) => p.name === activeProject)?.agent || 'claude';
+    if (activeProject && LOGIN_CMD[projectAgent])
+      list.push({
+        id: 'agent-login',
+        label: `Sign in to ${projectAgent}`,
+        hint: LOGIN_CMD[projectAgent],
+        keywords: 'auth login api key account',
+        run: () => typeInto(activeSession, LOGIN_CMD[projectAgent]),
+      });
+
+    if (activeProject) list.push({ id: 'tools', label: 'MCP, skills, lessons, templates', keywords: 'config extend', run: () => setToolsOpen(true) });
+    list.push({ id: 'settings', label: 'Provider settings', hint: 'Anthropic, DeepSeek, custom', keywords: 'api key login model', run: () => setSettingsOpen(true) });
+    if (role === 'admin') list.push({ id: 'admin', label: 'Accounts', hint: 'invite, quotas', keywords: 'users admin people', run: () => setAdminOpen(true) });
+
+    list.push({ id: 'focus', label: focus ? 'Show the crew' : 'Focus mode', hint: 'hide everything but the screen', keywords: 'zen full distraction', run: () => setFocus((v) => !v) });
+    list.push({ id: 'theme', label: theme === 'dark' ? 'Switch to light' : 'Switch to dark', keywords: 'appearance colour', run: () => setTheme((t) => (t === 'dark' ? 'light' : 'dark')) });
+
+    if (activeRecord) list.push({ id: 'remove', label: `Remove ${activeRecord.name}`, hint: 'keeps its history', keywords: 'delete crew', run: removeActive });
+    list.push({ id: 'signout', label: 'Sign out', keywords: 'logout leave', run: handleLogout });
+    return list;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRecord, crewOfProject, activeSession, projects, activeProject, role, theme, focus, awake]);
 
   if (authed === null) return <div className="boot-screen" />;
   if (!authed)
@@ -107,96 +318,112 @@ export default function App() {
       />
     );
 
+  const projectUsage = usage.find((u) => u.project === activeProject) || null;
+  const who = activeSession || 'plain terminal';
+  const state = activeSession
+    ? activity[activeSession] && Date.now() - activity[activeSession] < 1500
+      ? 'working'
+      : awake.has(activeSession)
+        ? 'awake'
+        : 'asleep'
+    : '';
+
   return (
     <div className="app-shell">
-      <Sidebar
-        projects={projects}
-        activeProject={activeProject}
-        onSelect={selectProject}
-        onNewProject={() => setNewProjectOpen(true)}
-        collapsed={sidebarCollapsed}
-        onToggle={() => setSidebarCollapsed((v) => !v)}
-      />
-
-      <main className="main-area">
-        {activeProject ? (
-          <>
-            <header className="main-head">
-              <div className="main-head-left">
-                <span className="main-project-name">{activeProject}</span>
-                <nav className="tab-bar">
-                  {TABS.map((t) => (
-                    <button key={t.id} type="button" className={`tab-btn ${tab === t.id ? 'is-active' : ''}`} onClick={() => setTab(t.id)}>
-                      {t.label}
-                    </button>
-                  ))}
-                </nav>
-              </div>
-              <div className="main-head-right">
-                <button type="button" className="icon-btn" onClick={() => setToolsOpen(true)} title="MCP, skills, lessons, templates" aria-label="Project tools">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      {!focus && (
+        <div className="strip">
+          <div className="strip-brand">
+            <b>codez</b>
+            {activeProject && (
+              <>
+                <span>/</span>
+                <button type="button" onClick={() => setPaletteOpen(true)} title="Switch project">
+                  {activeProject}
                 </button>
-                {role === 'admin' && (
-                  <button type="button" className="icon-btn" onClick={() => setAdminOpen(true)} title="Accounts" aria-label="Accounts">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  </button>
-                )}
-                <button type="button" className="icon-btn" onClick={() => setSettingsOpen(true)} title="Provider settings" aria-label="Provider settings">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <circle cx="12" cy="12" r="3" />
-                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-                  </svg>
-                </button>
-                <button type="button" className="icon-btn" onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} title="Toggle theme" aria-label="Toggle theme">
-                  {theme === 'dark' ? (
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" strokeLinecap="round" /></svg>
-                  ) : (
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                  )}
-                </button>
-                <button type="button" className="icon-btn" onClick={handleLogout} title="Sign out" aria-label="Sign out">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                </button>
-              </div>
-            </header>
-
-            {tab === 'terminal' && (
-              <AgentBar
-                project={activeProject}
-                sendCommand={(data) => sendersRef.current[activeProject]?.(data)}
-                hasSession={projects.find((p) => p.name === activeProject)?.hasSession}
-              />
-            )}
-            <div className="panel-area">
-              {openTerminals.map((name) => (
-                <TerminalView key={name} project={name} active={tab === 'terminal' && name === activeProject} registerSender={registerSender} />
-              ))}
-              <div className={`panel ${tab === 'files' ? '' : 'is-hidden'}`}>
-                <FileBrowser project={activeProject} />
-              </div>
-              <div className={`panel ${tab === 'preview' ? '' : 'is-hidden'}`}>
-                <Preview project={activeProject} />
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="empty-state fade-in">
-            <p>Create a project to get a real terminal, running on your own server.</p>
-            <button type="button" className="empty-settings-link" onClick={() => setSettingsOpen(true)}>Set up a provider first</button>
-            {role === 'admin' && (
-              <button type="button" className="empty-settings-link" onClick={() => setAdminOpen(true)}>Invite someone</button>
+              </>
             )}
           </div>
-        )}
-      </main>
 
+          {activeProject && (
+            <CrewRail
+              project={activeProject}
+              activeSession={activeSession}
+              onSelect={selectSession}
+              activity={activity}
+              awake={awake}
+              refreshKey={crewVersion}
+              onSessionsChange={setCrewOfProject}
+            />
+          )}
+
+          <div className="strip-spacer" />
+
+          <button type="button" className="strip-k" onClick={() => setPaletteOpen(true)}>
+            {/* The label is in a span so the narrow-screen rule can drop it and leave the key
+                cap, which is the part that still makes sense with no room for words. */}
+            <span>Do anything</span>
+            <kbd>⌘K</kbd>
+          </button>
+        </div>
+      )}
+
+      <div className="stage">
+        <div className="screen">
+          {activeProject ? (
+            <>
+              {openTerms.map((t) => (
+                <TerminalView
+                  key={t.key}
+                  project={t.project}
+                  session={t.session}
+                  active={view === 'terminal' && t.key === activeKey}
+                  registerSender={registerSender}
+                  onActivity={noteActivity}
+                />
+              ))}
+              <div className={`panel ${view === 'files' ? '' : 'is-hidden'}`}>
+                <FileBrowser project={activeProject} />
+              </div>
+              <div className={`panel ${view === 'preview' ? '' : 'is-hidden'}`}>
+                <Preview project={activeProject} />
+              </div>
+            </>
+          ) : (
+            <div className="empty-state">
+              <p>No projects yet. A project is a folder on your server with a real terminal in it.</p>
+              <button type="button" className="empty-settings-link" onClick={() => setNewProjectOpen(true)}>
+                Make your first one
+              </button>
+            </div>
+          )}
+        </div>
+
+        {activeProject && (
+          <div className="status">
+            <span className="status-who">{focus ? '' : who}</span>
+            <span className={`status-state ${state === 'working' ? 'status-live' : ''}`}>
+              {focus ? '' : state}
+              {!focus && projectUsage?.tracked && <span className="status-tokens">{formatTokens(projectUsage.totalTokens)} tokens</span>}
+              {!focus && projectUsage && !projectUsage.tracked && <span className="status-tokens">usage not tracked for {projectUsage.agent}</span>}
+            </span>
+            <button
+              type="button"
+              className="status-hint"
+              onClick={() => setFocus((v) => !v)}
+              title={focus ? 'Bring the crew back' : 'Hide everything but the screen'}
+            >
+              {focus ? 'show the crew' : 'focus'}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {paletteOpen && <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} />}
       {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
       {adminOpen && <Admin onClose={() => setAdminOpen(false)} />}
       {newProjectOpen && <NewProjectModal onClose={() => setNewProjectOpen(false)} onCreate={handleCreate} />}
       {toolsOpen && activeProject && <ProjectTools project={activeProject} onClose={() => setToolsOpen(false)} />}
-      <TokenHud openProjects={openTerminals} />
+      {teleportOpen && <TeleportCard onClose={() => setTeleportOpen(false)} />}
     </div>
   );
 }

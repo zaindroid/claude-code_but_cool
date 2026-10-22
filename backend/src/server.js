@@ -6,11 +6,23 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 
-import { login, logout, authStatus, requireAuth, requireAdmin, bootstrapAdmin, userFromCookieHeader } from './auth.js';
+import { login, logout, authStatus, requireAuth, requireAdmin, requireAuthOrToken, bootstrapAdmin, userFromCookieHeader } from './auth.js';
+import { createToken, listTokens, revokeToken } from './tokens.js';
+import {
+  receiveSession,
+  refs,
+  createBundle,
+  applyBundle,
+  tryFastForward,
+  transcriptMeta,
+  readTranscriptFrom,
+  appendTranscript,
+  markSynced,
+} from './teleport.js';
 import { listUsers, createUser, setUserQuota, reconcileOsUsers } from './users.js';
 import { listProjects, createProject, projectPath } from './projects.js';
 import { listDir, readFile } from './files.js';
-import { attachTerminal } from './pty.js';
+import { attachTerminal, liveSessionNames } from './pty.js';
 import { readSettingsForClient, writeSettings, clearAuthToken, PRESETS } from './settings.js';
 import { duBytes, PLATFORM_QUOTA_BYTES, GB } from './diskUsage.js';
 import { listAgents, getAgent } from './agents.js';
@@ -20,6 +32,16 @@ import { listSkills, createSkill, deleteSkill } from './skills.js';
 import { listLessons, createLesson, deleteLesson, injectLessonsIntoProject, promoteLessonToSkill } from './lessons.js';
 import { listTemplates, saveProjectAsTemplate } from './templates.js';
 import { getUsageForProjects } from './tokenUsage.js';
+import {
+  listAllSessions,
+  listSessions,
+  createSession,
+  updateSession,
+  deleteSession,
+  findSessionById,
+  launchCommand,
+  hasTranscript,
+} from './sessions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -62,6 +84,137 @@ app.use(
     },
   })
 );
+// Resolves the `:project/:name` pair every teleport route takes into a real project directory and
+// a real session record, or throws the right 404. A `function` declaration so it is hoisted above
+// the routes that close over it.
+function teleportTarget(req) {
+  const project = String(req.params.project || '');
+  const dir = projectPath(req.user, project);
+  if (!dir || !fs.existsSync(dir)) throw Object.assign(new Error(`No project called "${project}" here`), { status: 404 });
+  const wanted = String(req.params.name || '').toLowerCase();
+  const session = (listSessions(req.user, project) || []).find((s) => s.name === wanted);
+  if (!session) throw Object.assign(new Error(`No session called "${wanted}" in project "${project}" -- teleport it with /arrive first`), { status: 404 });
+  return { project, dir, session };
+}
+
+// --- teleport ---------------------------------------------------------------------------------
+// Registered BEFORE the global json parser and before the blanket cookie gate below, deliberately,
+// for two reasons that both bite otherwise:
+//   - These routes carry git bundles and transcript batches, which are far larger than the 256kb
+//     the rest of the API is (correctly) limited to. Express runs middleware in registration
+//     order, so the global parser would reject a legitimate teleport with a 413 before any
+//     route-specific parser could see it.
+//   - They authenticate with `requireAuthOrToken` rather than `requireAuth`, because the caller is
+//     a CLI on a machine with no browser cookie. See auth.js for why that is scoped to here only.
+const teleportJson = express.json({ limit: '24mb' });
+const teleportBundle = express.raw({ type: 'application/octet-stream', limit: '128mb' });
+
+app.use('/api/teleport', requireAuthOrToken);
+
+// Connectivity + identity check. The first thing `codez login` calls, so the answer to "is my
+// token right and which account am I" is one request with no side effects.
+app.get('/api/teleport/hello', (req, res) =>
+  res.json({
+    ok: true,
+    username: req.user.username,
+    viaToken: Boolean(req.viaToken),
+    projects: listProjects(req.user).map((p) => p.name),
+    sessions: listAllSessions(req.user).map((s) => ({ name: s.name, project: s.project, claudeSessionId: s.claudeSessionId })),
+  })
+);
+
+// Lands a session here (creating the project, within quota, if it doesn't exist) and reports
+// anything about it that will not work on this side.
+app.post('/api/teleport/arrive', teleportJson, (req, res) => {
+  try {
+    const { project, name, claudeSessionId, agent, machine, cwd } = req.body || {};
+    res.json(
+      receiveSession(req.user, {
+        project: String(project || '').trim(),
+        name: String(name || '').trim().toLowerCase(),
+        claudeSessionId: String(claudeSessionId || ''),
+        agent: agent ? String(agent) : 'claude',
+        machine: machine ? String(machine).slice(0, 64) : null,
+        cwd: cwd ? String(cwd).slice(0, 512) : null,
+      })
+    );
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Everything the other side needs to work out what to send: which commits this side has, and the
+// exact shape of its transcript. `prefix` asks for the hash of the first N lines, which is how
+// "behind" is told apart from "diverged" (see teleport.js).
+app.get('/api/teleport/:project/:name/state', (req, res) => {
+  try {
+    const { dir, session } = teleportTarget(req);
+    res.json({
+      project: req.params.project,
+      session: { name: session.name, id: session.id, claudeSessionId: session.claudeSessionId, origin: session.origin },
+      refs: refs(req.user, dir),
+      transcript: transcriptMeta(req.user, dir, session, req.query.prefix ?? null),
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get('/api/teleport/:project/:name/bundle', (req, res) => {
+  try {
+    const { dir } = teleportTarget(req);
+    const have = String(req.query.have || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const data = createBundle(req.user, dir, have);
+    // 204 rather than an empty 200: "you are already up to date" is a real, expected answer to
+    // this question, and git itself refuses to create an empty bundle rather than making one.
+    if (!data) return res.status(204).end();
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.send(data);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post('/api/teleport/:project/:name/bundle', teleportBundle, (req, res) => {
+  try {
+    const { dir } = teleportTarget(req);
+    if (!req.body?.length) return res.status(400).json({ error: 'Empty bundle' });
+    const applied = applyBundle(req.user, dir, req.body);
+    // Fast-forwarded only when provably safe; otherwise the incoming work sits in refs/teleport/*
+    // for a real merge. Either way the caller is told which happened rather than left to assume.
+    const ff = tryFastForward(req.user, dir);
+    res.json({ ...applied, fastForward: ff });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get('/api/teleport/:project/:name/transcript', (req, res) => {
+  try {
+    const { dir, session } = teleportTarget(req);
+    res.json(readTranscriptFrom(req.user, dir, session, Number(req.query.from) || 0));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Append-only, with a compare-and-append guard: see appendTranscript. A 409 here is not a failure,
+// it is the other side saying "the transcript moved, look again" -- which is what keeps two
+// machines pushing at once from destroying each other's history.
+app.post('/api/teleport/:project/:name/transcript', teleportJson, (req, res) => {
+  try {
+    const { dir, session } = teleportTarget(req);
+    const result = appendTranscript(req.user, dir, session, Number(req.body?.fromLine), req.body?.lines);
+    markSynced(req.user, req.params.project, session.id, result.lines);
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message, lines: err.lines });
+  }
+});
+
 app.use(express.json({ limit: '256kb' }));
 
 let ready = false;
@@ -103,6 +256,29 @@ function requireProjectDir(req, res) {
 
 app.get('/api/agents', (req, res) => res.json({ agents: listAgents() }));
 
+// --- machine tokens ---------------------------------------------------------------------------
+// Behind the cookie-only gate on purpose: minting a credential is something a signed-in human
+// does in a browser, never something an existing token can do for itself. Otherwise one leaked
+// token could quietly issue itself replacements and revoking it would achieve nothing.
+app.get('/api/tokens', (req, res) => res.json({ tokens: listTokens(req.user) }));
+app.post('/api/tokens', (req, res) => {
+  try {
+    const { token, record } = createToken(req.user, req.body?.label);
+    // The only response that ever contains the real token. Not logged, not stored in plaintext,
+    // and not retrievable afterward -- the UI has to tell the user to copy it now.
+    res.status(201).json({ token, record });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+app.delete('/api/tokens/:id', (req, res) => {
+  try {
+    res.json(revokeToken(req.user, req.params.id));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 app.get('/api/projects/:project/config', (req, res) => {
   const dir = requireProjectDir(req, res);
   if (!dir) return;
@@ -122,6 +298,89 @@ app.put('/api/projects/:project/config', (req, res) => {
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }
+});
+
+// --- Named agent sessions (sessions.js) -------------------------------------------------------
+// Account-wide, because that is the scope session *names* live in: every one of this account's
+// sessions runs in the same shared container, so to Claude Code they are peer sessions on one
+// machine that address each other by name. The crew rail reads this one route to show the whole
+// crew at once rather than asking per project.
+app.get('/api/sessions', (req, res) => {
+  // Both of these are real facts checked at request time, not flags this app remembers -- same
+  // principle as /api/agents checking `command -v` rather than trusting the Dockerfile worked.
+  // They mean genuinely different things and the crew rail shows them differently:
+  //   hasHistory -- a transcript exists on disk, so this session has really run and can --resume
+  //   awake      -- a shell is alive for it right now, so it is running or waiting on input
+  const awake = liveSessionNames(req.user);
+  const sessions = listAllSessions(req.user).map((s) => {
+    const dir = projectPath(req.user, s.project);
+    return {
+      ...s,
+      hasHistory: dir ? hasTranscript(req.user, dir, s) : false,
+      awake: awake.has(s.name),
+    };
+  });
+  res.json({ sessions });
+});
+
+app.get('/api/projects/:project/sessions', (req, res) => {
+  const dir = requireProjectDir(req, res);
+  if (!dir) return;
+  res.json({ sessions: listSessions(req.user, req.params.project) });
+});
+
+app.post('/api/projects/:project/sessions', (req, res) => {
+  const dir = requireProjectDir(req, res);
+  if (!dir) return;
+  try {
+    res.status(201).json({
+      session: createSession(req.user, req.params.project, {
+        name: String(req.body?.name || '').trim().toLowerCase(),
+        agent: req.body?.agent ? String(req.body.agent) : undefined,
+      }),
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/projects/:project/sessions/:id', (req, res) => {
+  const dir = requireProjectDir(req, res);
+  if (!dir) return;
+  try {
+    const patch = {};
+    if (req.body?.name !== undefined) patch.name = String(req.body.name).trim().toLowerCase();
+    if (req.body?.avatar !== undefined) patch.avatar = req.body.avatar;
+    res.json({ session: updateSession(req.user, req.params.project, req.params.id, patch) });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/projects/:project/sessions/:id', (req, res) => {
+  const dir = requireProjectDir(req, res);
+  if (!dir) return;
+  try {
+    res.json(deleteSession(req.user, req.params.project, req.params.id));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// The command to wake this session, as a string the frontend types into the real terminal (the
+// same contract AgentBar's guided-mode buttons already use). Whether it resumes or starts fresh
+// is decided here by looking at the filesystem, because `--session-id` on a uuid that already has
+// a transcript and `--resume` on one that doesn't are both hard errors -- see launchCommand.
+app.get('/api/projects/:project/sessions/:id/launch', (req, res) => {
+  const dir = requireProjectDir(req, res);
+  if (!dir) return;
+  const session = findSessionById(req.user, req.params.project, req.params.id);
+  if (!session) return res.status(404).json({ error: 'Unknown session' });
+  const resume = hasTranscript(req.user, dir, session);
+  res.json({
+    command: launchCommand(session, { resume, fork: req.query.fork === '1' }),
+    resume,
+  });
 });
 
 app.get('/api/projects/:project/mcp', (req, res) => {
@@ -320,6 +579,10 @@ server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://localhost');
     attachTerminal(ws, user, {
       project: url.searchParams.get('project'),
+      // A named session keys the terminal by name so it survives a reload and can take a second
+      // viewer; `sessionId` is the old per-tab random id, still used for anonymous terminals.
+      // See pty.js's terminalKey.
+      session: url.searchParams.get('session') || null,
       sessionId: url.searchParams.get('sessionId'),
       cols: Number(url.searchParams.get('cols')) || 80,
       rows: Number(url.searchParams.get('rows')) || 24,

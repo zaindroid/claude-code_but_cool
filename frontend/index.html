@@ -5,11 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Codez</title>
   <meta name="description" content="A terminal for Claude Code, hosted on your own server." />
-  <meta name="theme-color" content="#1a1815" />
+  <meta name="theme-color" content="#141722" />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <!-- No webfont link, and not an oversight. The three tags that used to sit here (two preconnects
+       and a fonts.googleapis.com stylesheet) could never work: this app's CSP allows style-src and
+       font-src from 'self' only, so the browser blocked both the stylesheet and every font file,
+       and the interface had been quietly running on system fallbacks since the day they were
+       added. The type scale in styles.css is now built on a system monospace stack deliberately --
+       nothing to block, nothing to wait for, and no third-party request from a deployment that is
+       meant to stay inside one private network. -->
 </head>
 <body>
   <div id="root"></div>

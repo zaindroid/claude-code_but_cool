@@ -80,7 +80,11 @@ import { execFileSync } from 'node:child_process';
 // `command -v` rather than the external `which` binary -- a plain Debian-slim base image (this
 // container's own) isn't guaranteed to have `which` installed, but `command` is a POSIX shell
 // builtin every /bin/sh has.
-function isOnPath(bin) {
+// Exported because teleport.js needs the same check for a different question: an arriving
+// session's `.mcp.json` can name a command that existed on the origin machine and does not exist
+// in this container, and saying so at arrival is much kinder than letting it surface later as an
+// agent inexplicably failing a tool call.
+export function isOnPath(bin) {
   try {
     execFileSync('/bin/sh', ['-c', `command -v ${bin}`], { stdio: 'pipe' });
     return true;
@@ -104,11 +108,19 @@ export function getAgent(id) {
   return AGENTS[id] || null;
 }
 
-// Claude Code stores one transcript directory per project *absolute path*, with '/' replaced by
-// '-' -- this is Claude Code's own real, documented convention (~/.claude/projects/<sanitized>/),
-// not something Codez invents. Reused here so tokenUsage.js can find the right directory for a
-// given project without duplicating this logic.
+// Claude Code stores one transcript directory per project *absolute path* under its own real,
+// documented location (~/.claude/projects/<sanitized>/) -- not something Codez invents. Reused
+// here so tokenUsage.js and teleport.js can find the right directory without duplicating this.
+//
+// The sanitizing rule collapses EVERY non-alphanumeric character to a single dash, not just the
+// path separators -- verified 2026-10-22 against all 33 real transcript directories on a live
+// machine: `C:\Users\zain_` lands at `C--Users-zain-`, i.e. the colon and the trailing underscore
+// both became dashes, and no slug held any character outside [A-Za-z0-9-]. Replacing only the
+// separators (as this did until now) was wrong for every project whose name contains `_` or `.`
+// -- both of which projects.js's own NAME_RE explicitly allows -- and silently pointed the token
+// HUD and the has-a-prior-session check at a directory Claude Code never writes to. Anything that
+// has to *write* a transcript for `claude --resume` to then find depends on this being exact.
 export function sanitizedClaudeSessionDir(homeDir, projectDir) {
-  const sanitized = projectDir.replace(/[/\\]/g, '-');
+  const sanitized = projectDir.replace(/[^a-zA-Z0-9]/g, '-');
   return `${homeDir}/.claude/projects/${sanitized}`;
 }

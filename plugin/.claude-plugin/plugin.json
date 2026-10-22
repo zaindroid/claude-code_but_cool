@@ -1,0 +1,6 @@
+{
+  "name": "codez-teleport",
+  "version": "0.1.0",
+  "description": "Teleport the current Claude Code session to or from your Codez server, with its transcript and workspace.",
+  "author": "codez"
+}

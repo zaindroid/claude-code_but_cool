@@ -8,7 +8,7 @@ import { chownToUser } from './osUsers.js';
 import { checkCanCreateProject } from './diskUsage.js';
 import { writeProjectConfig, readProjectConfig } from './projectConfig.js';
 import { instantiateTemplate } from './templates.js';
-import { getAgent } from './agents.js';
+import { getAgent, sanitizedClaudeSessionDir } from './agents.js';
 
 const DATA_DIR = process.env.DATA_DIR || path.resolve(process.cwd(), 'data');
 
@@ -41,7 +41,11 @@ export function listProjects(user) {
       // A project that already has a Claude Code transcript directory (see tokenUsage.js) has a
       // real prior session on disk -- surfaced here so the UI can offer "resume" instead of
       // always dropping into a fresh session, without guessing from anything in-terminal.
-      const hasSession = config.agent === 'claude' && fs.existsSync(path.join(user.homeDir, '.claude', 'projects', dir.replace(/[/\\]/g, '-')));
+      //
+      // Goes through agents.js's own helper rather than re-deriving the slug inline: the rule is
+      // subtler than it looks (every non-alphanumeric collapses to a dash, not just the
+      // separators) and keeping a second copy here is exactly how the two drifted apart.
+      const hasSession = config.agent === 'claude' && fs.existsSync(sanitizedClaudeSessionDir(user.homeDir, dir));
       return { name: e.name, createdAt: stat.birthtime.toISOString(), agent: config.agent, hasSession };
     })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));

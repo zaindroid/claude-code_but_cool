@@ -5,6 +5,7 @@
 // self-registers.
 import crypto from 'node:crypto';
 import { verifyLogin, findById, createUser, isFirstBoot } from './users.js';
+import { userFromToken, bearerFromRequest } from './tokens.js';
 
 const COOKIE_NAME = 'codez_session';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days -- a personal tool, not re-logging in weekly
@@ -92,6 +93,23 @@ export function requireAuth(req, res, next) {
   const user = userFromCookieHeader(req.headers.cookie);
   if (!user) return res.status(401).json({ error: 'Sign in first' });
   req.user = user;
+  next();
+}
+
+// Accepts either a browser session cookie or a machine API token (tokens.js).
+//
+// Used ONLY on the teleport routes, not on /api generally, and that narrowness is the point: a
+// token sits in a file on a laptop with no human watching it, so what it can reach is kept to the
+// surface that actually needs it -- moving sessions and workspaces. It cannot read or rewrite
+// provider settings, create accounts, or change quotas, because those routes stay behind the
+// cookie-only gate. A stolen token costs you the sessions it could already reach; it does not
+// hand over the account.
+export function requireAuthOrToken(req, res, next) {
+  const bearer = bearerFromRequest(req);
+  const user = bearer ? userFromToken(bearer) : userFromCookieHeader(req.headers.cookie);
+  if (!user) return res.status(401).json({ error: 'Sign in, or send a Codez API token as `Authorization: Bearer czt_...`' });
+  req.user = user;
+  req.viaToken = Boolean(bearer);
   next();
 }
 

@@ -56,3 +56,30 @@ export const saveAsTemplate = (project, name, description) => call('/api/templat
 
 // Token usage HUD
 export const getTokenUsage = () => call('/api/usage/tokens');
+
+// Named agent sessions -- the crew.
+//
+// listCrew is account-wide on purpose, matching the backend: session names are unique across the
+// whole account because every session is a peer on one machine as far as Claude Code is concerned,
+// so the rail can show who exists (and who is awake) without asking project by project.
+export const listCrew = () => call('/api/sessions');
+export const listSessions = (project) => call(`/api/projects/${encodeURIComponent(project)}/sessions`);
+export const createSession = (project, name, agent) =>
+  call(`/api/projects/${encodeURIComponent(project)}/sessions`, { method: 'POST', body: JSON.stringify({ name, agent }) });
+export const updateSession = (project, id, patch) =>
+  call(`/api/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) });
+export const deleteSession = (project, id) =>
+  call(`/api/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+// Asks the backend for the exact command to wake this session. The backend decides resume-vs-fresh
+// by looking at whether the transcript actually exists, which the frontend has no way to know and
+// must not guess -- `--session-id` on a uuid that already has history is a hard error, as is
+// `--resume` on one that has none.
+export const sessionLaunchCommand = (project, id, { fork = false } = {}) =>
+  call(`/api/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(id)}/launch${fork ? '?fork=1' : ''}`);
+
+// Machine tokens, for teleport. The POST response is the only time the real token exists outside
+// the server -- it is stored hashed and can never be read back, so the UI has to make the user
+// copy it there and then.
+export const listMachineTokens = () => call('/api/tokens');
+export const createMachineToken = (label) => call('/api/tokens', { method: 'POST', body: JSON.stringify({ label }) });
+export const revokeMachineToken = (id) => call(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' });
