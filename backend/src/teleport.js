@@ -115,19 +115,38 @@ export function isGitRepo(user, projectDir) {
 // cannot merge and would therefore have to overwrite -- and silently overwriting the side that
 // happened to sync second is precisely the data loss this whole module is arranged to avoid. An
 // initial commit is recoverable and inspectable; a clobbered workspace is not.
-export function ensureRepo(user, projectDir) {
+export function ensureRepo(user, projectDir, { initialCommit = true } = {}) {
   if (isGitRepo(user, projectDir)) return { created: false };
   git(user, projectDir, 'init -q');
   // user.email/name are set locally (not --global) so this never touches anything else the
-  // account owns, and so the commit does not fail outright on a container with no git identity.
+  // account owns, and so a commit does not fail outright on a container with no git identity.
   git(user, projectDir, `config user.email ${q(`${user.linuxUsername}@codez.local`)}`);
   git(user, projectDir, `config user.name ${q(user.username || user.linuxUsername)}`);
-  git(user, projectDir, 'add -A');
+
+  // Codez's own per-project metadata is excluded from git, via .git/info/exclude rather than
+  // .gitignore: info/exclude is local to this clone, so it never appears as a change in the
+  // user's own repo or travels to their other machines. Without it, `.codez/` sits permanently
+  // untracked, `git status --porcelain` is never empty, and every future sync refuses to
+  // fast-forward with "working tree has uncommitted changes" -- for files the user never wrote.
   try {
-    git(user, projectDir, `commit -q -m ${q('codez: initial commit before first teleport')} --allow-empty`);
+    runAsUser(user, `printf '%s\\n' '/.codez/' >> ${q(path.join(projectDir, '.git', 'info', 'exclude'))}`);
   } catch {
-    // An empty project with nothing to commit is fine -- --allow-empty covers it, and a failure
-    // here is not worth refusing the teleport over.
+    /* exclude is a convenience; a repo without it still works */
+  }
+
+  // `initialCommit: false` is what a project receiving a teleport wants, and the distinction
+  // matters more than it looks. A fresh commit here would give the new repo a root of its own,
+  // unrelated to the history about to arrive -- so every single first teleport would land as two
+  // unrelated histories, report "diverged", and leave the files invisible in the working tree. A
+  // repo with no commits at all has nothing to diverge from, so the arriving branch can simply be
+  // adopted (see applyBundle).
+  if (initialCommit) {
+    git(user, projectDir, 'add -A');
+    try {
+      git(user, projectDir, `commit -q -m ${q('codez: initial commit before first teleport')} --allow-empty`);
+    } catch {
+      /* nothing to commit is fine, and not worth refusing a teleport over */
+    }
   }
   return { created: true };
 }
@@ -162,7 +181,11 @@ export function refs(user, projectDir) {
 function incomingRef(user, projectDir) {
   let text = '';
   try {
-    text = git(user, projectDir, 'for-each-ref --format=%(refname) refs/teleport/').trim();
+    // The format string is quoted because this command is handed to `bash -c`: unquoted,
+    // `%(refname)`'s parentheses are bash syntax, the shell dies with a parse error before git
+    // ever runs, and the caller sees "nothing arrived" for a perfectly healthy repo. Live-caught
+    // 2026-10-22 on the first real teleport, where the refs had in fact arrived correctly.
+    text = git(user, projectDir, `for-each-ref --format=${q('%(refname)')} refs/teleport/`).trim();
   } catch {
     return null;
   }
@@ -214,7 +237,9 @@ export function createBundle(user, projectDir, have = []) {
 // to merge it -- which is the behaviour that makes a two-way sync safe to run without being asked
 // "are you sure" every time. applyBundle reports what landed; merging is a separate, explicit act.
 export function applyBundle(user, projectDir, bundleBuffer) {
-  ensureRepo(user, projectDir);
+  // No initial commit: a repo created to receive a teleport must not invent a root commit of its
+  // own, or the arriving history is unrelated to it forever. See ensureRepo.
+  ensureRepo(user, projectDir, { initialCommit: false });
   const bundlePath = path.join('/tmp', `codez-in-${crypto.randomUUID()}.bundle`);
   // Written 0600 by this process (root), then relaxed to 0644 *by root* so the account's own git
   // can read it when the fetch runs under `su`.
@@ -242,9 +267,22 @@ export function tryFastForward(user, projectDir, ref = null) {
   try {
     const incomingRefName = ref || incomingRef(user, projectDir);
     if (!incomingRefName) return { moved: false, reason: 'nothing arrived to fast-forward to' };
+
+    // No HEAD at all means this project was created to receive this session and has no history of
+    // its own, so there is nothing to merge *with* -- the arriving branch simply becomes the
+    // branch. This is the normal path for a first teleport, and without it the commits land in
+    // refs/teleport/* while the working tree stays empty and the files appear to have vanished.
+    let head = null;
+    try {
+      head = git(user, projectDir, 'rev-parse HEAD').trim();
+    } catch {
+      const branch = incomingRefName.split('/').pop();
+      git(user, projectDir, `checkout -q -B ${q(branch)} ${q(incomingRefName)}`);
+      return { moved: true, adopted: true, branch, to: git(user, projectDir, 'rev-parse HEAD').trim() };
+    }
+
     const dirty = git(user, projectDir, 'status --porcelain').trim();
     if (dirty) return { moved: false, reason: 'working tree has uncommitted changes' };
-    const head = git(user, projectDir, 'rev-parse HEAD').trim();
     const incoming = git(user, projectDir, `rev-parse ${q(incomingRefName)}`).trim();
     if (head === incoming) return { moved: false, reason: 'already up to date' };
     const base = git(user, projectDir, `merge-base ${head} ${incoming}`).trim();
@@ -390,7 +428,9 @@ export function receiveSession(user, { project, name, claudeSessionId, agent = '
     });
   }
 
-  ensureRepo(user, dir);
+  // Same reason as applyBundle: a project that exists to receive a session must not be given a
+  // root commit of its own before the real history arrives, or the two can never be related.
+  ensureRepo(user, dir, { initialCommit: false });
   return { session, ...arrivalReport(user, project, dir) };
 }
 
