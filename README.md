@@ -96,15 +96,78 @@ against the container's own PATH, the same PATH every account's shell inherits (
 New Project screen only ever claims a tool is available if it genuinely is.
 
 Every project picks one agent at creation, recorded in that project's own `.codez/config.json`
-(`backend/src/projectConfig.js`). Above the terminal, a thin **guided-mode bar** (`AgentBar.jsx`)
-shows buttons for that agent's own real commands -- login, resume, start -- each one just typing
-that exact string into the live PTY, the same as typing it yourself. **Legend mode** turns the bar
-off and hands back exactly the plain terminal Codez always had; nothing about the terminal itself
-changes either way, and it's one click to switch back.
+(`backend/src/projectConfig.js`). Every agent-facing button in the UI works the same way: it types
+that tool's own real command into the live PTY, exactly as if you'd typed it. Codez implements auth
+for none of them and wires no flags behind your back, so there is nothing here to keep in sync with
+a CLI that changes.
 
-Opening an existing project whose agent is Claude Code checks for a real prior transcript
-(`~/.claude/projects/<sanitized-path>/`, Claude Code's own on-disk convention) and offers **Resume**
-only when one genuinely exists.
+The guided-mode bar and its legend-mode toggle are gone. The whole interface is now the plain
+terminal plus a command palette, so there is no mode to switch out of.
+
+## The crew: named agent sessions
+
+A **session** is one named agent with a face. Add one, give it a name, and you get a real Claude
+Code session that persists: its shell keeps running when you close the tab, a second browser or
+device can attach to the same live terminal, and the name is how you reach it.
+
+The name is doing real work, not decoration:
+
+- It is the **address**. Every session of one account runs inside the same container, so as far as
+  Claude Code is concerned they are peer sessions on one machine — which means `ListAgents` and
+  `SendMessage` already work between them, with no messaging layer invented here. Two agents in the
+  same account can talk to each other by name.
+- It is the **seed for the face**. Faces are generated with [blobatar](https://blobatar.dev)
+  (MIT, deterministic), so a face is derived from the same string you address the agent by, and
+  everyone looking at the same crew sees identical faces with nothing synced.
+- It must be **unique across the account**, not just the project. This is forced rather than
+  chosen: `--name` is machine-wide, so two projects each with a `scout` would make `ListAgents`
+  ambiguous and silently break the messaging that naming them is for.
+
+A face shows what its agent is actually doing. "Working" is driven by real output arriving from
+that session's PTY, not by a timer — so a face is busy only when its agent genuinely just said
+something.
+
+Codez generates the session uuid itself and passes `--session-id`, which is what makes everything
+else exact: the transcript lands at a path Codez can predict rather than discover, so resuming is
+`claude --resume <uuid>` and forking is `--fork-session`, both Claude Code's own flags.
+
+## Teleport: move a session between machines
+
+A session running on your laptop can be moved onto the server and keep going with the laptop
+switched off, then moved back. On the machine you're moving it from:
+
+```
+node cli/codez.mjs login https://your-codez-host   # once, with a token from the Teleport panel
+node cli/codez.mjs detect                          # what it found, without sending anything
+node cli/codez.mjs up                              # send it
+node cli/codez.mjs down scout                      # bring it back later
+```
+
+There's a bundled Claude Code plugin in `plugin/` so `/teleport` works from inside a session.
+
+**What moves:** the transcript (Claude Code's own JSONL — this *is* the conversation), the
+workspace, and the identity (same uuid, same name).
+
+**What doesn't:** credentials. A teleported session runs on the provider settings of the account it
+lands in, which is exactly what lets it work with the origin machine off, and means a machine's own
+API key never travels.
+
+**Why sync is safe.** A transcript is append-only, so whichever side is behind simply receives the
+lines it lacks. Sides are compared by hashing their common prefix, byte for byte — so a longer file
+whose prefix differs is *not* treated as merely "ahead". If both sides genuinely advanced, teleport
+stops and says so instead of picking a winner, and you can continue one of them as a fork with both
+histories intact.
+
+**Workspaces move as git bundles**, so what arrives is a real fetch with real history that can be
+really merged. They land on `refs/teleport/*` and your branch is never moved for you unless a
+fast-forward is provably safe. A project that isn't a git repo gets `git init` and one commit on
+first teleport — stated plainly because it's a real change to your files, and the alternative was a
+tarball, which can only overwrite.
+
+**Not via GitHub**, despite git being the mechanism. This deployment is reachable only inside a
+private network, and routing transcripts — which carry whatever got pasted into a session — through
+a third party would leave that boundary for nothing in return. Codez's own API is the transport.
+GitHub still works fine as an ordinary extra remote if you want one.
 
 ## MCP servers, skills, and knowledge transfer between projects
 
@@ -125,12 +188,16 @@ only when one genuinely exists.
 
 ## Real token usage, not a guess
 
-The HUD in the bottom-right corner sums real numbers, not an estimate scraped from terminal output:
+The number in the status line is real, not an estimate scraped from terminal output:
 Claude Code writes its own transcript for every session as JSONL, with the actual `usage` object
 the API returned on every assistant message (`backend/src/tokenUsage.js` reads exactly that, the
 same accounting Claude Code's own `/cost` uses). OpenCode, Codex and DeepCode aren't wired up yet --
 their own local storage formats weren't verified live in this build, and a guessed number would be
-worse than the HUD honestly saying "not tracked yet" for those.
+worse than honestly saying "not tracked" for those.
+
+It used to float in a HUD in the corner. It now sits in the status line, partly because a number
+this quiet doesn't need to hover over the screen, and partly because that HUD was one of the
+elements a layout-shift probe repeatedly named while chasing a flicker bug (`KNOWN_ISSUES.md`).
 
 ## Signing in to Claude Code itself
 
@@ -148,8 +215,10 @@ Two ways, same as running Claude Code anywhere else, set per account from the Se
   whatever you run in the terminal (Claude Code included). Real scope, not a missing feature by
   accident.
 - Auto-detecting a running dev server's port for Preview -- you tell it the port once instead.
-- Resuming a terminal session across a page reload beyond the current tab's short reconnect grace
-  period (60s) -- reloading the page currently starts a fresh shell in that project.
+- Token usage for OpenCode, Codex and DeepCode (shown as "not tracked" rather than guessed).
+- Any merge assistance for a diverged teleport. Codez tells you it diverged, keeps both histories
+  and offers a fork; actually reconciling two conversations is left to you, because there is no
+  correct automatic answer and pretending otherwise would lose work.
 - Full OS/kernel-level isolation between accounts (separate containers or VMs per account) --
   what's actually implemented is real Linux-user/file-permission isolation within one shared
   container (see "How it's built" above), which stops one account from reading another's files but
