@@ -91,13 +91,28 @@ delete process.env.ADMIN_PASSWORD_RESET;
 bootstrapAdmin();
 ck('a boot with neither variable set is a no-op', !!users.verifyLogin('admin', 'hashwins5555'));
 
-// An unknown username is an operator mistake worth surviving: nothing reset, nothing broken.
+// A name no account holds: the hatch creates that admin rather than giving up, so the way back in
+// does not depend on ADMIN_USERNAME still matching whatever first boot used.
+//
+// Creation goes through useradd, which this machine does not have, so here it fails -- and the
+// point of asserting it anyway is that it must fail without taking the boot down and without
+// disturbing the account that already works. The successful-creation half only exists on Linux,
+// where this suite could not make a real system user either.
 process.env.ADMIN_USERNAME = 'nobody';
 process.env.ADMIN_PASSWORD_RESET_HASH = users.hashPassword('shouldnotapply');
+let boom = false;
+try { bootstrapAdmin(); } catch { boom = true; }
+ck('a reset for a missing account does not throw at boot', boom === false);
+ck('the account that already worked still works either way', !!users.verifyLogin('admin', 'hashwins5555'));
+
+// Validation happens before creation, so a typo cannot leave behind a half-made admin whose
+// password nobody knows.
+process.env.ADMIN_USERNAME = 'typocase';
+process.env.ADMIN_PASSWORD_RESET_HASH = 'not-a-hash';
 bootstrapAdmin();
-ck('a reset aimed at a missing account changes nothing', !!users.verifyLogin('admin', 'hashwins5555'));
-ck('and does not create that account', users.findByUsername('nobody') === null);
+ck('a malformed hash creates no account at all', users.findByUsername('typocase') === null);
 
 fs.rmSync(dir, { recursive: true, force: true });
-console.log(`\n${p} passed, ${f} failed`);
+console.log(`
+${p} passed, ${f} failed`);
 process.exit(f ? 1 : 0);

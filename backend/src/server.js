@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 
-import { login, logout, authStatus, requireAuth, requireAdmin, requireAuthOrToken, bootstrapAdmin, userFromCookieHeader } from './auth.js';
+import { login, logout, authStatus, requireAuth, requireAdmin, requireAuthOrToken, bootstrapAdmin, recoveryArmed, userFromCookieHeader } from './auth.js';
 import { createToken, listTokens, revokeToken } from './tokens.js';
 import {
   receiveSession,
@@ -19,7 +19,7 @@ import {
   appendTranscript,
   markSynced,
 } from './teleport.js';
-import { listUsers, createUser, setUserQuota, reconcileOsUsers } from './users.js';
+import { listUsers, createUser, setUserQuota, reconcileOsUsers, isFirstBoot } from './users.js';
 import { listProjects, createProject, projectPath } from './projects.js';
 import { listDir, readFile } from './files.js';
 import { attachTerminal, liveSessionNames, busySessionNames } from './pty.js';
@@ -235,7 +235,19 @@ app.use(express.json({ limit: '256kb' }));
 let ready = false;
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 app.get('/ready', (req, res) => (ready ? res.json({ status: 'ready' }) : res.status(503).json({ status: 'starting' })));
-app.get('/version', (req, res) => res.json({ sha: process.env.APP_SHA || 'unknown', built: process.env.APP_BUILT || 'unknown' }));
+// Reported unauthenticated and on purpose: the questions it answers -- which commit is live, did
+// the restart pick up the variable I just set, is there an account yet -- are the ones you need
+// answered when you cannot get in, and none of the answers help anyone who is not already
+// deploying this. SOURCE_COMMIT is what Coolify injects at build; APP_SHA stays first so any other
+// host can override it.
+app.get('/version', (req, res) =>
+  res.json({
+    sha: process.env.APP_SHA || process.env.SOURCE_COMMIT || 'unknown',
+    built: process.env.APP_BUILT || 'unknown',
+    firstBoot: isFirstBoot(),
+    recoveryArmed: recoveryArmed(),
+  })
+);
 app.get('/openapi.json', (req, res) =>
   res.json({ openapi: '3.0.0', info: { title: 'Codez', version: '0.1.0' }, paths: { '/api/projects': {}, '/api/files': {}, '/api/file': {}, '/api/admin/users': {} } })
 );

@@ -129,10 +129,16 @@ export function setPassword(id, password) {
 // handed to a running deployment without the password ever existing outside the machine that
 // chose it -- not in an env var, not in a deploy API's request body, not in whatever log that API
 // keeps. Hashing is the same scryptSync above, just run somewhere else.
+// Exported so a caller can tell a usable hash from a typo before acting on it, rather than
+// finding out halfway through a multi-step operation it cannot unwind.
+export function isStoredHash(stored) {
+  return STORED_HASH_RE.test(String(stored || ''));
+}
+
 export function setPasswordHash(id, stored) {
   const user = findById(id);
   if (!user) throw Object.assign(new Error('No such account'), { status: 404 });
-  if (!STORED_HASH_RE.test(String(stored || ''))) {
+  if (!isStoredHash(stored)) {
     throw Object.assign(new Error('Not a stored password hash -- expected 32 hex characters of salt, a colon, then 128 hex characters'), { status: 400 });
   }
   user.passwordHash = stored;

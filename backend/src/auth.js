@@ -4,7 +4,7 @@
 // admin can create further accounts afterward (server.js's /api/admin/users) -- nobody
 // self-registers.
 import crypto from 'node:crypto';
-import { verifyLogin, findById, findByUsername, createUser, setPassword, setPasswordHash, isFirstBoot } from './users.js';
+import { verifyLogin, findById, findByUsername, createUser, setPassword, setPasswordHash, isStoredHash, isFirstBoot } from './users.js';
 import { userFromToken, bearerFromRequest } from './tokens.js';
 
 const COOKIE_NAME = 'codez_session';
@@ -87,27 +87,48 @@ function applyPasswordReset(username) {
   const hash = process.env.ADMIN_PASSWORD_RESET_HASH;
   const password = process.env.ADMIN_PASSWORD_RESET;
   if (!hash && !password) return;
+  const variable = hash ? 'ADMIN_PASSWORD_RESET_HASH' : 'ADMIN_PASSWORD_RESET';
 
-  const admin = findByUsername(username);
-  if (!admin) {
-    console.warn(`A password reset is set, but no account is named "${username}" -- nothing was reset`);
+  // Checked before anything is created, so a typo cannot leave a half-made admin account behind
+  // whose password nobody knows.
+  if (hash && !isStoredHash(hash)) {
+    console.error(`${variable} is not a stored password hash (expected 32 hex characters of salt, a colon, 128 hex characters) -- nothing was changed`);
     return;
   }
 
-  // Hash form wins when both are present: it is the one that did not require the password to
-  // travel, so if someone has gone to the trouble of using it, honour it.
   try {
+    let admin = findByUsername(username);
+    if (!admin) {
+      // Created, not just reset, and deliberately. A hatch that only opens when ADMIN_USERNAME
+      // still matches whatever was passed at first boot is a hatch that fails on the one day it
+      // is needed, because that name is exactly the sort of thing nobody writes down. Guaranteeing
+      // an admin under a name chosen in advance makes the way back in knowable. Accounts that
+      // already exist -- including an admin under some other name -- are left untouched.
+      admin = createUser({
+        username,
+        password: password || crypto.randomBytes(24).toString('hex'),
+        role: 'admin',
+      });
+      console.log(`Created an admin named ${username}, since no account had that name`);
+    }
     if (hash) setPasswordHash(admin.id, hash);
     else setPassword(admin.id, password);
   } catch (err) {
-    // Shouting rather than throwing. A malformed reset variable should not stop the server from
-    // booting -- the old password still works, and refusing to start would take the whole
-    // deployment down over a typo in a recovery hatch.
-    console.error(`Password reset rejected: ${err.message} -- the existing password is unchanged`);
+    // Shouted, not thrown. Refusing to boot over a bad recovery variable would turn a typo into
+    // the outage this hatch exists to prevent, and the existing password still works.
+    console.error(`Password reset rejected: ${err.message} -- nothing was changed`);
     return;
   }
-  console.log(`Reset the password for ${username} -- unset ${hash ? 'ADMIN_PASSWORD_RESET_HASH' : 'ADMIN_PASSWORD_RESET'} now`);
+  console.log(`${username} can sign in with the password from ${variable} -- unset that variable now`);
 }
+
+// Whether a reset is currently armed. Reported by /version so an operator can tell, from outside,
+// that the deployment has actually picked up the variable they set -- the question that is
+// otherwise unanswerable when the platform only surfaces the last line of the log.
+export function recoveryArmed() {
+  return Boolean(process.env.ADMIN_PASSWORD_RESET_HASH || process.env.ADMIN_PASSWORD_RESET);
+}
+
 
 export function login(req, res) {
   const { username, password } = req.body || {};
