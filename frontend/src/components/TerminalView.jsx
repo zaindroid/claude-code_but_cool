@@ -78,6 +78,61 @@ export default function TerminalView({ project, session = null, active, register
     term.loadAddon(new WebLinksAddon());
     term.open(containerRef.current);
 
+    // A one-line note laid over the terminal, used for things the terminal itself cannot say.
+    // Deliberately not written into the buffer: the screen usually belongs to a full-screen TUI
+    // that repaints every frame, and text written underneath it is either overwritten a moment
+    // later or garbles the frame it lands in.
+    let flashTimer = null;
+    const flash = (text, ok = true) => {
+      const host = containerRef.current;
+      if (!host) return;
+      let el = host.querySelector('.term-flash');
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'term-flash';
+        host.appendChild(el);
+      }
+      el.textContent = text;
+      el.dataset.ok = ok ? 'yes' : 'no';
+      if (flashTimer) clearTimeout(flashTimer);
+      flashTimer = setTimeout(() => el.remove(), 2600);
+    };
+
+    // OSC 52 -- "put this on the clipboard", the escape sequence a program uses when it cannot
+    // reach the clipboard itself. xterm.js ships no handler for it, and inside this container
+    // there is nothing else to fall back on: no pbcopy, no clip.exe, no xclip, no X server at
+    // all. That gap is load-bearing rather than a nicety.
+    //
+    // Claude Code's sign-in screen prints the authorize URL and hard-wraps it across two rows.
+    // The link detector only follows a continuation row whose `isWrapped` flag is set -- a real
+    // soft wrap -- so it stops at the break and clicking the link opens the first half of the
+    // URL, without the code_challenge, and the sign-in never verifies. The same screen offers
+    // `(c to copy)`, which is an OSC 52 write, and that is the way out of a terminal you are
+    // reaching through a browser.
+    //
+    // Write only. The same sequence can also ask the terminal to *read* the clipboard back into
+    // the program's stdin, and anything able to print here -- including the output of a command
+    // it ran, or a file it cat'd -- could use that to lift whatever you last copied. Those
+    // requests are swallowed: claimed as handled so nothing echoes, and never answered.
+    const osc52 = term.parser.registerOscHandler(52, (payload) => {
+      const semi = payload.indexOf(';');
+      if (semi === -1) return false;
+      const body = payload.slice(semi + 1);
+      if (body === '?') return true;
+      let text;
+      try {
+        text = new TextDecoder().decode(Uint8Array.from(atob(body), (c) => c.charCodeAt(0)));
+      } catch {
+        return false; // not base64 after all -- let xterm treat the sequence as unhandled
+      }
+      const written = navigator.clipboard?.writeText(text);
+      // Said out loud either way. A copy that silently does nothing is the worst of the three
+      // outcomes, because it looks exactly like a copy that worked.
+      if (written) written.then(() => flash('copied to clipboard'), () => flash('browser blocked the copy — select the text instead', false));
+      else flash('clipboard unavailable here — select the text instead', false);
+      return true;
+    });
+
     // Draw on the GPU instead of building the screen out of DOM nodes.
     //
     // xterm's default renderer makes a <span> per styled run and reflows the lot on every frame.
@@ -347,6 +402,8 @@ export default function TerminalView({ project, session = null, active, register
       disposed = true;
       if (retryTimer) clearTimeout(retryTimer);
       if (resizeTimer) clearTimeout(resizeTimer);
+      if (flashTimer) clearTimeout(flashTimer);
+      osc52.dispose();
       clearInterval(beat);
       window.removeEventListener('online', revive);
       window.removeEventListener('focus', revive);

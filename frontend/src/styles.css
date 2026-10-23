@@ -1192,3 +1192,29 @@ button { cursor: pointer; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* What the terminal itself cannot say. Sits over the bottom-right corner of the screen rather
+   than in the buffer, because the buffer usually belongs to a full-screen TUI that will repaint
+   over anything written into it. Short-lived and out of the way: it reports whether a copy
+   actually reached the clipboard, which is otherwise indistinguishable from one that silently
+   failed. */
+.term-flash {
+  position: absolute;
+  right: 18px;
+  bottom: 16px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  font-size: 11.5px;
+  letter-spacing: 0.01em;
+  pointer-events: none;
+  background: var(--panel, #1a1815);
+  color: var(--text-muted, #b9b2a3);
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+  animation: term-flash-in 140ms ease-out;
+}
+.term-flash[data-ok='no'] { color: #e0685a; border-color: rgba(224, 104, 90, 0.4); }
+
+@keyframes term-flash-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
