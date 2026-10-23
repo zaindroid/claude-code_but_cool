@@ -120,11 +120,31 @@ export default function TerminalView({ project, session = null, active, register
       } catch {
         return false; // not base64 after all -- let xterm treat the sequence as unhandled
       }
+      // Said out loud, always, and that is the whole point: a copy that silently does nothing is
+      // the worst of the possible outcomes, because it is indistinguishable from one that
+      // worked. Which is exactly what you had before this handler existed.
+      //
+      // Raced against a timer because `writeText` has a third outcome besides resolving and
+      // rejecting: it can simply never settle. Caught here doing it -- 45s and still pending, on
+      // a page reporting `isSecureContext` and `document.hasFocus()` -- when the browser wants to
+      // ask permission and has nowhere to ask. Waiting on that promise alone would reproduce the
+      // original silence through a different door.
       const written = navigator.clipboard?.writeText(text);
-      // Said out loud either way. A copy that silently does nothing is the worst of the three
-      // outcomes, because it looks exactly like a copy that worked.
-      if (written) written.then(() => flash('copied to clipboard'), () => flash('browser blocked the copy — select the text instead', false));
-      else flash('clipboard unavailable here — select the text instead', false);
+      if (!written) {
+        flash('no clipboard access here — select the text instead', false);
+        return true;
+      }
+      let settled = false;
+      const say = (msg, ok) => {
+        if (settled) return;
+        settled = true;
+        flash(msg, ok);
+      };
+      written.then(
+        () => say('copied to clipboard', true),
+        () => say('the browser blocked the copy — select the text instead', false)
+      );
+      setTimeout(() => say('the browser did not confirm the copy — check before pasting', false), 1500);
       return true;
     });
 
