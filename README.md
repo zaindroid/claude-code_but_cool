@@ -54,6 +54,33 @@ via `deploy()`'s `env_overrides` -- pick a real password, this becomes the first
 shell access to your server). The container runs as root deliberately (no `USER` directive) --
 only root can create Linux system users and spawn a process as a different one's uid/gid.
 
+## If the admin password is lost
+
+There is no forgot-password link, and there will not be one: no mail server to send to, and an
+unauthenticated route that rewrites the admin password is a worse hole than the problem it solves.
+There is no change-password route either. Recovery goes through the environment instead, so it is
+available to whoever controls the deployment and to nobody else.
+
+Hash the new password on your own machine, so it never travels through an env var or a deploy
+API`s request body:
+
+```bash
+node backend/tool/hashPassword.mjs < password.txt   # prints salt:hash
+```
+
+Set that output as `ADMIN_PASSWORD_RESET_HASH` on the app, restart, sign in, then unset it. The
+account keeps its id, role, quota and Linux user, and nothing on the data volume is touched --
+projects, sessions and histories all survive.
+
+`ADMIN_PASSWORD_RESET` takes a plain password instead, for an operator who already has a shell and
+would rather just type one. When both are set the hash wins.
+
+The reset is re-applied on every boot while the variable is set, rather than once behind a marker
+file. That is deliberate: it makes the operation idempotent, so a crash loop or a half-finished
+deploy cannot strand the account in a state nobody holds the password for -- the exact situation
+this exists to end. A malformed value is logged and ignored rather than thrown, because refusing
+to boot would turn a typo in a recovery hatch into the outage it was meant to prevent.
+
 ## Persistence
 
 `app.yaml`'s `persistent_storage: {mount_path: /data}` gives this app a real, stable,

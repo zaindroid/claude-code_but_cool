@@ -1,0 +1,103 @@
+// The admin password reset hatch (auth.js's applyPasswordReset).
+//
+// Covered because it is the one path nobody exercises until the day it is the only way back into
+// a deployment -- by which point there is no opportunity to find out it broke three releases ago.
+//
+// createUser is sidestepped throughout: it calls a real Linux useradd, which cannot run here. A
+// hand-written account record is faithful enough, since the reset only ever reads an account and
+// rewrites its stored hash.
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codez-reset-'));
+process.env.DATA_DIR = dir;
+process.env.ADMIN_USERNAME = 'admin';
+
+const src = (f) => pathToFileURL(path.resolve("backend/src/" + f)).href;
+const users = await import(src('users.js'));
+const { bootstrapAdmin } = await import(src('auth.js'));
+
+let p = 0, f = 0;
+const ck = (l, c) => (c ? (p++, console.log('PASS  ' + l)) : (f++, console.log('FAIL  ' + l)));
+
+const id = crypto.randomUUID();
+fs.writeFileSync(path.join(dir, 'users-meta', id + '.json'), JSON.stringify({
+  id,
+  username: 'admin',
+  passwordHash: '',
+  role: 'admin',
+  createdAt: new Date().toISOString(),
+  linuxUsername: 'codez-admin',
+  uid: 2001,
+  gid: 2001,
+  homeDir: '/home/codez-admin',
+  projectsDir: '/home/codez-admin/projects',
+  quotaBytes: 1024,
+}));
+
+users.setPassword(id, 'theoldone123');
+ck('the old password signs in before any reset', !!users.verifyLogin('admin', 'theoldone123'));
+ck('an existing account means this is not first boot', users.isFirstBoot() === false);
+
+// The hash form: a new credential handed to a running deployment without the password itself ever
+// travelling through an env var or a deploy API.
+process.env.ADMIN_PASSWORD_RESET_HASH = users.hashPassword('viahash7890');
+bootstrapAdmin();
+ck('hash-form reset admits the new password', !!users.verifyLogin('admin', 'viahash7890'));
+ck('hash-form reset locks out the old password', users.verifyLogin('admin', 'theoldone123') === null);
+
+const after = users.findByUsername('admin');
+ck('the account keeps its id', after.id === id);
+ck('the account stays an admin', after.role === 'admin');
+ck('the backing Linux user is untouched', after.linuxUsername === 'codez-admin' && after.uid === 2001);
+ck('the quota is untouched', after.quotaBytes === 1024);
+ck('a reset never stores the password in the clear', !fs.readFileSync(path.join(dir, 'users-meta', id + '.json'), 'utf8').includes('viahash7890'));
+
+// A typo in a recovery variable must not take the deployment down -- refusing to boot over it
+// would turn a cosmetic mistake into the outage this hatch exists to prevent.
+process.env.ADMIN_PASSWORD_RESET_HASH = 'not-a-hash';
+let threw = false;
+try { bootstrapAdmin(); } catch { threw = true; }
+ck('a malformed hash does not throw at boot', threw === false);
+ck('a malformed hash leaves the working password alone', !!users.verifyLogin('admin', 'viahash7890'));
+
+// The plaintext form, for an operator who has a shell and just wants to type a new password.
+delete process.env.ADMIN_PASSWORD_RESET_HASH;
+process.env.ADMIN_PASSWORD_RESET = 'plaintext1234';
+bootstrapAdmin();
+ck('the plaintext form works too', !!users.verifyLogin('admin', 'plaintext1234'));
+
+process.env.ADMIN_PASSWORD_RESET = 'short';
+bootstrapAdmin();
+ck('a too-short plaintext reset is refused, not applied', !!users.verifyLogin('admin', 'plaintext1234'));
+
+// Both set: the hash wins, because whoever used it went out of their way not to let the password
+// travel, and honouring the weaker one would quietly undo that.
+process.env.ADMIN_PASSWORD_RESET_HASH = users.hashPassword('hashwins5555');
+process.env.ADMIN_PASSWORD_RESET = 'plaintextloses';
+bootstrapAdmin();
+ck('the hash form wins when both are set', !!users.verifyLogin('admin', 'hashwins5555'));
+
+// Idempotent while set, inert once cleared -- the property that makes it safe to leave a reset in
+// place across a crash loop and safe to forget about afterwards.
+bootstrapAdmin();
+ck('re-applying the same reset changes nothing', !!users.verifyLogin('admin', 'hashwins5555'));
+
+delete process.env.ADMIN_PASSWORD_RESET_HASH;
+delete process.env.ADMIN_PASSWORD_RESET;
+bootstrapAdmin();
+ck('a boot with neither variable set is a no-op', !!users.verifyLogin('admin', 'hashwins5555'));
+
+// An unknown username is an operator mistake worth surviving: nothing reset, nothing broken.
+process.env.ADMIN_USERNAME = 'nobody';
+process.env.ADMIN_PASSWORD_RESET_HASH = users.hashPassword('shouldnotapply');
+bootstrapAdmin();
+ck('a reset aimed at a missing account changes nothing', !!users.verifyLogin('admin', 'hashwins5555'));
+ck('and does not create that account', users.findByUsername('nobody') === null);
+
+fs.rmSync(dir, { recursive: true, force: true });
+console.log(`\n${p} passed, ${f} failed`);
+process.exit(f ? 1 : 0);

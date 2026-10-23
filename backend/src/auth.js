@@ -4,7 +4,7 @@
 // admin can create further accounts afterward (server.js's /api/admin/users) -- nobody
 // self-registers.
 import crypto from 'node:crypto';
-import { verifyLogin, findById, findByUsername, createUser, setPassword, isFirstBoot } from './users.js';
+import { verifyLogin, findById, findByUsername, createUser, setPassword, setPasswordHash, isFirstBoot } from './users.js';
 import { userFromToken, bearerFromRequest } from './tokens.js';
 
 const COOKIE_NAME = 'codez_session';
@@ -84,15 +84,29 @@ export function bootstrapAdmin() {
 // situation this exists to end. Unset it once you are back in; it is plaintext in the environment
 // for as long as it stays.
 function applyPasswordReset(username) {
+  const hash = process.env.ADMIN_PASSWORD_RESET_HASH;
   const password = process.env.ADMIN_PASSWORD_RESET;
-  if (!password) return;
+  if (!hash && !password) return;
+
   const admin = findByUsername(username);
   if (!admin) {
-    console.warn(`ADMIN_PASSWORD_RESET is set, but no account is named "${username}" -- nothing was reset`);
+    console.warn(`A password reset is set, but no account is named "${username}" -- nothing was reset`);
     return;
   }
-  setPassword(admin.id, password);
-  console.log(`Reset the password for ${username} from ADMIN_PASSWORD_RESET -- unset that variable now`);
+
+  // Hash form wins when both are present: it is the one that did not require the password to
+  // travel, so if someone has gone to the trouble of using it, honour it.
+  try {
+    if (hash) setPasswordHash(admin.id, hash);
+    else setPassword(admin.id, password);
+  } catch (err) {
+    // Shouting rather than throwing. A malformed reset variable should not stop the server from
+    // booting -- the old password still works, and refusing to start would take the whole
+    // deployment down over a typo in a recovery hatch.
+    console.error(`Password reset rejected: ${err.message} -- the existing password is unchanged`);
+    return;
+  }
+  console.log(`Reset the password for ${username} -- unset ${hash ? 'ADMIN_PASSWORD_RESET_HASH' : 'ADMIN_PASSWORD_RESET'} now`);
 }
 
 export function login(req, res) {

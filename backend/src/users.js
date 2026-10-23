@@ -14,8 +14,10 @@ const USERS_DIR = path.join(DATA_DIR, 'users-meta');
 fs.mkdirSync(USERS_DIR, { recursive: true });
 
 const USERNAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]{1,31}$/;
+// What hashPassword emits: 16 bytes of salt, a colon, 64 bytes of scrypt output.
+const STORED_HASH_RE = /^[0-9a-f]{32}:[0-9a-f]{128}$/;
 
-function hashPassword(password) {
+export function hashPassword(password) {
   const salt = crypto.randomBytes(16);
   const hash = crypto.scryptSync(password, salt, 64);
   return `${salt.toString('hex')}:${hash.toString('hex')}`;
@@ -119,10 +121,21 @@ export function setUserQuota(id, quotaBytes) {
 // password on this box is real shell access, so the one caller of this is auth.js's boot-time
 // reset, reached through an env var by whoever already controls the deployment.
 export function setPassword(id, password) {
+  if (!password || password.length < 8) throw Object.assign(new Error('Password must be at least 8 characters'), { status: 400 });
+  return setPasswordHash(id, hashPassword(password));
+}
+
+// Takes the stored form (salt:hash) instead of the password itself, so a new credential can be
+// handed to a running deployment without the password ever existing outside the machine that
+// chose it -- not in an env var, not in a deploy API's request body, not in whatever log that API
+// keeps. Hashing is the same scryptSync above, just run somewhere else.
+export function setPasswordHash(id, stored) {
   const user = findById(id);
   if (!user) throw Object.assign(new Error('No such account'), { status: 404 });
-  if (!password || password.length < 8) throw Object.assign(new Error('Password must be at least 8 characters'), { status: 400 });
-  user.passwordHash = hashPassword(password);
+  if (!STORED_HASH_RE.test(String(stored || ''))) {
+    throw Object.assign(new Error('Not a stored password hash -- expected 32 hex characters of salt, a colon, then 128 hex characters'), { status: 400 });
+  }
+  user.passwordHash = stored;
   return save(user);
 }
 
