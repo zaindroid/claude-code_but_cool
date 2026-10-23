@@ -4,7 +4,7 @@
 // admin can create further accounts afterward (server.js's /api/admin/users) -- nobody
 // self-registers.
 import crypto from 'node:crypto';
-import { verifyLogin, findById, createUser, isFirstBoot } from './users.js';
+import { verifyLogin, findById, findByUsername, createUser, setPassword, isFirstBoot } from './users.js';
 import { userFromToken, bearerFromRequest } from './tokens.js';
 
 const COOKIE_NAME = 'codez_session';
@@ -59,12 +59,40 @@ function setSessionCookie(req, res, userId) {
 // into the first real account so there is always exactly one way in on a fresh deploy, with
 // nothing left in an ambiguous "nobody can sign in yet" state.
 export function bootstrapAdmin() {
-  if (!isFirstBoot()) return;
-  const password = process.env.ADMIN_PASSWORD;
-  if (!password) throw new Error('ADMIN_PASSWORD is not set, and there is no admin account yet -- cannot start with nobody able to sign in');
   const username = process.env.ADMIN_USERNAME || 'admin';
-  createUser({ username, password, role: 'admin' });
-  console.log(`Created the first account: ${username}`);
+  if (isFirstBoot()) {
+    const password = process.env.ADMIN_PASSWORD;
+    if (!password) throw new Error('ADMIN_PASSWORD is not set, and there is no admin account yet -- cannot start with nobody able to sign in');
+    createUser({ username, password, role: 'admin' });
+    console.log(`Created the first account: ${username}`);
+    return;
+  }
+  applyPasswordReset(username);
+}
+
+// The way back in when the admin password is lost.
+//
+// There is no "forgot password" link and there is not going to be one: no mail server to send to,
+// and an unauthenticated route that rewrites the admin's password is a worse hole than the problem
+// it solves. Nor is there reliably a shell on the box -- this runs as a container on a host the
+// operator may only reach through a deploy API. What is left is the one channel that platform does
+// expose: set an env var, restart.
+//
+// Re-applied on every boot while the variable is set, rather than once behind a marker file. That
+// is deliberate: it makes the operation idempotent, so a crash loop or a half-finished deploy
+// cannot strand the account in a state nobody holds the password for -- which is the exact
+// situation this exists to end. Unset it once you are back in; it is plaintext in the environment
+// for as long as it stays.
+function applyPasswordReset(username) {
+  const password = process.env.ADMIN_PASSWORD_RESET;
+  if (!password) return;
+  const admin = findByUsername(username);
+  if (!admin) {
+    console.warn(`ADMIN_PASSWORD_RESET is set, but no account is named "${username}" -- nothing was reset`);
+    return;
+  }
+  setPassword(admin.id, password);
+  console.log(`Reset the password for ${username} from ADMIN_PASSWORD_RESET -- unset that variable now`);
 }
 
 export function login(req, res) {

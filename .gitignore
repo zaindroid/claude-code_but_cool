@@ -5,3 +5,6 @@ frontend/dist/
 .env
 *.log
 AGENT_CONTEXT/
+
+# Local-only: the admin password written by the boot-time reset path (auth.js). Never committed.
+.secrets/

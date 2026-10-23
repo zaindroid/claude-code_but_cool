@@ -115,6 +115,17 @@ export function setUserQuota(id, quotaBytes) {
   return save(user);
 }
 
+// Recovery only. There is deliberately no "change my password" route in server.js -- every
+// password on this box is real shell access, so the one caller of this is auth.js's boot-time
+// reset, reached through an env var by whoever already controls the deployment.
+export function setPassword(id, password) {
+  const user = findById(id);
+  if (!user) throw Object.assign(new Error('No such account'), { status: 404 });
+  if (!password || password.length < 8) throw Object.assign(new Error('Password must be at least 8 characters'), { status: 400 });
+  user.passwordHash = hashPassword(password);
+  return save(user);
+}
+
 export function verifyLogin(username, password) {
   const user = findByUsername(username);
   if (!user || !verifyPassword(password, user.passwordHash)) return null;
