@@ -2,7 +2,6 @@ import { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 
 // One real PTY per terminal, kept alive across a tab switch (Terminal vs Preview) by the parent
@@ -20,10 +19,6 @@ export default function TerminalView({ project, session = null, active, register
   const termRef = useRef(null);
   const wsRef = useRef(null);
   const fitRef = useRef(null);
-  // Disposes the GPU renderer on unmount. A WebGL context is a real, limited resource -- browsers
-  // cap how many a page may hold -- so leaking one per terminal you ever opened would eventually
-  // drop every terminal back to the slow renderer.
-  const webglRef = useRef(null);
   // Only used for anonymous terminals. Random per mount on purpose -- an anonymous terminal is
   // meant to end with its tab, which is exactly what an unstable key gives you. A named session
   // keys on its name instead, server-side, which is what makes it outlive the tab.
@@ -132,35 +127,6 @@ export default function TerminalView({ project, session = null, active, register
       else flash('clipboard unavailable here — select the text instead', false);
       return true;
     });
-
-    // Draw on the GPU instead of building the screen out of DOM nodes.
-    //
-    // xterm's default renderer makes a <span> per styled run and reflows the lot on every frame.
-    // For a shell printing a line at a time that is fine, and it is why nobody noticed; for a
-    // full-screen TUI like Claude Code, which repaints its whole frame on every token, it is the
-    // single thing making the terminal feel slow. It also scales with how many terminals are
-    // open, because every mounted one keeps rendering whether or not you are looking at it.
-    //
-    // Loaded after open() because the addon needs a real canvas to attach to, and guarded because
-    // WebGL is not guaranteed: a blocklisted driver, a software-rendering VM or too many live GL
-    // contexts all make it throw, and losing the context later is normal on a laptop waking up.
-    // Either way the DOM renderer is still there underneath, so the failure mode is "as slow as
-    // it used to be", never a blank terminal.
-    let webgl = null;
-    try {
-      webgl = new WebglAddon();
-      webgl.onContextLoss(() => {
-        try { webgl.dispose(); } catch { /* already gone */ }
-        webgl = null;
-      });
-      term.loadAddon(webgl);
-    } catch {
-      webgl = null;
-    }
-    webglRef.current = () => {
-      try { webgl?.dispose(); } catch { /* already gone */ }
-      webgl = null;
-    };
 
     // The background is now a fixed colour rather than a hole onto the page, so it has to be told
     // when the page's colour changes. Watching the one attribute the toggle actually sets is
@@ -412,8 +378,10 @@ export default function TerminalView({ project, session = null, active, register
       onData.dispose();
       socket?.close();
       themeWatch.disconnect();
-      webglRef.current?.();
-      webglRef.current = null;
+      // Nulled before the terminal goes, so the renderer effect below -- whose cleanup may run
+      // after this one -- can tell "the terminal is gone" from "I am just being swapped out".
+      // Disposing the terminal disposes the addons loaded into it anyway.
+      termRef.current = null;
       term.dispose();
       if (registerSender) registerSender(termKey, null);
     };
@@ -429,6 +397,58 @@ export default function TerminalView({ project, session = null, active, register
       // A hidden xterm can't measure itself correctly; re-fit the moment it becomes visible again.
       requestAnimationFrame(() => fitRef.current.fit());
     }
+  }, [active]);
+
+  // Draw on the GPU instead of building the screen out of DOM nodes -- but only for the terminal
+  // actually on screen.
+  //
+  // xterm's default renderer makes a <span> per styled run and reflows the lot on every frame.
+  // For a shell printing a line at a time that is fine, which is why nobody noticed for so long;
+  // for a full-screen TUI like Claude Code, which repaints its whole frame on every token, it is
+  // the single thing that made the terminal feel slow.
+  //
+  // Tied to `active` rather than to the mount, because a WebGL context is a genuinely scarce
+  // resource: browsers cap a page at roughly sixteen of them, and xterm takes two per terminal.
+  // With a crew this size, giving every open terminal a context -- including the six you are not
+  // looking at -- walks straight into that ceiling, and crossing it makes the browser drop the
+  // *oldest* contexts, which is to say somebody else's terminal. One context, for the one screen
+  // you can see, and the rest give theirs back.
+  //
+  // Imported here rather than at the top of the file so its ~100 kB is not part of the bundle the
+  // page has to parse before it can show you anything.
+  //
+  // Guarded throughout: WebGL is not a guarantee. A blocklisted driver, a software-rendering VM,
+  // or simply too many live contexts all make this throw, and losing a context later is ordinary
+  // on a laptop waking from sleep. The DOM renderer is always still underneath, so every failure
+  // here degrades to "as slow as it used to be", never to a blank screen.
+  useEffect(() => {
+    if (!active) return undefined;
+    let dropped = false;
+    let addon = null;
+    import('@xterm/addon-webgl')
+      .then(({ WebglAddon }) => {
+        if (dropped || !termRef.current) return;
+        try {
+          addon = new WebglAddon();
+          addon.onContextLoss(() => {
+            try { addon?.dispose(); } catch { /* already gone */ }
+            addon = null;
+          });
+          termRef.current.loadAddon(addon);
+        } catch {
+          addon = null; // no GPU path available; the DOM renderer stays
+        }
+      })
+      .catch(() => { /* chunk failed to load -- same fallback */ });
+    return () => {
+      dropped = true;
+      // Only worth disposing while the terminal is still alive. On unmount the terminal's own
+      // teardown has already nulled this and disposed its addons with it.
+      if (termRef.current) {
+        try { addon?.dispose(); } catch { /* already gone */ }
+      }
+      addon = null;
+    };
   }, [active]);
 
   return <div className={`terminal-pane ${active ? '' : 'is-hidden'}`} ref={containerRef} />;
