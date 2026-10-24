@@ -159,58 +159,152 @@ button { cursor: pointer; }
 
 /* ---------------------------------------------------------------- shell layout */
 
-/* One strip, one screen, one status line. There is no sidebar, no tab bar and no toolbar, and
-   that absence is the design rather than an omission: a person with a working memory under load
-   should not have to scan four regions of chrome to find the one control they want. Everything
-   that is not the screen or the crew lives behind a single key (⌘K), so there is exactly one place
-   to look and one thing to remember.
-   The old .sidebar / .tab-bar / .agent-bar rules are gone with their markup. */
+/* A deck, a band, one screen, one status line. There is no sidebar, no tab bar and no toolbar,
+   and that absence is the design rather than an omission: a person with a working memory under
+   load should not have to scan four regions of chrome to find the one control they want.
+   Everything that is not the screen, the crew or the choice of tool lives behind a single key
+   (⌘K), so there is one place to look and one thing to remember.
+
+   The deck and the band were one strip until they were not. Every one of these -- the name, the
+   folder, four CLI tabs, every face, start, stop, remove, ⌘K -- shared a single row, which on
+   any window narrower than very wide meant they took turns being visible. Two rows, split by the
+   question each answers (deck: where am I, which tool; band: who, and what can I do with them),
+   costs 40 pixels and ends the competition.
+
+   Flex rather than grid rows, because the number of children genuinely varies: focus mode drops
+   both rows and an account with no folder yet drops the band, and a fixed set of grid rows gives
+   the wrong one of them the 1fr. */
 .app-shell {
-  display: grid;
-  grid-template-rows: auto 1fr;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   background: var(--bg);
 }
 
-.strip {
+/* Row one. Fixed height, like the band: it sits above the terminal, and anything up here that
+   changes size resizes the terminal under it (AGENT_CONTEXT/KNOWN_ISSUES.md). */
+.deck {
   display: flex;
   align-items: center;
-  gap: 18px;
-  padding: 10px 16px;
-  min-height: 56px;
-  flex-shrink: 0;
+  gap: 16px;
+  padding: 0 16px;
+  height: 48px;
+  flex: 0 0 auto;
+  min-width: 0;
 }
 
-.strip-brand {
+.deck-brand {
   display: flex;
-  align-items: baseline;
-  gap: 1px;
+  align-items: center;
+  gap: 2px;
   font-size: 13px;
   font-weight: 500;
   letter-spacing: -0.02em;
   white-space: nowrap;
   min-width: 0;
 }
-.strip-brand b { font-weight: 700; color: var(--text); }
-.strip-brand span { color: var(--text-faint); }
-.strip-brand button {
-  border: none;
+.deck-brand b { font-weight: 700; color: var(--text); }
+.deck-brand > span { color: var(--text-faint); }
+
+/* The folder you are standing in. A real select, styled down to the surrounding text so it reads
+   as part of the path rather than as a form control dropped into the header -- the native menu is
+   what opens, which is the whole reason to use one: no popover to build, nothing to lay out, and
+   it already works with a keyboard and a screen reader. */
+.deck-project {
+  appearance: none;
+  border: 0;
   background: transparent;
-  padding: 0;
   font: inherit;
   color: var(--text-muted);
-  max-width: 28ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  padding: 2px 16px 2px 3px;
+  max-width: 24ch;
+  border-radius: 6px;
+  cursor: pointer;
+  /* The caret, drawn rather than reserved: a background image cannot shift anything. */
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right 7px top 55%, right 3px top 55%;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
 }
-.strip-brand button:hover { color: var(--accent); }
+.deck-project:hover { color: var(--text); background-color: var(--panel); }
+.deck-project:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* The menu itself is drawn by the OS, so it needs explicit colours or it inherits the page's
+   transparent background and renders as unreadable text on white. */
+.deck-project option { background: var(--bg-elevated); color: var(--text); }
 
-.strip-spacer { flex: 1; min-width: 8px; }
+.deck-newproject {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.deck-newproject:hover { color: var(--accent); background: var(--panel); }
+
+.deck-spacer { flex: 1; min-width: 8px; }
+
+/* Row two: the crew of whichever page the deck has selected. Same fixed-height rule. */
+.band {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px 8px;
+  height: 52px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------- agent pages */
+/* One tab per CLI, in the deck. Quiet row of words rather than another set of chips: these change
+   *what the page is about*, and a control that loud would compete with the faces it governs.
+   Fixed height and no border-width change between states, for the reason the deck is fixed too. */
+.deck-pages {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-gutter: stable;
+}
+.deck-page {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.16s ease, background 0.16s ease;
+}
+.deck-page:hover:not(:disabled) { color: var(--text); background: var(--panel); }
+.deck-page.is-on { color: var(--text); background: var(--accent-soft); font-weight: 500; }
+/* Not installed here. Legible rather than hidden, and plainly not a thing you can press. */
+.deck-page:disabled { opacity: 0.4; cursor: not-allowed; }
+.deck-page-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+}
 
 /* The ⌘K affordance. Looks like a key because pressing the key is the intended path; clicking it
    is the fallback for anyone who does not know that yet, which is most people the first time. */
-.strip-k {
+.deck-k {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -222,8 +316,8 @@ button { cursor: pointer; }
   font-size: 12px;
   transition: border-color 0.15s ease, color 0.15s ease;
 }
-.strip-k:hover { border-color: var(--accent); color: var(--text); }
-.strip-k kbd {
+.deck-k:hover { border-color: var(--accent); color: var(--text); }
+.deck-k kbd {
   font: inherit;
   font-size: 11px;
   padding: 1px 5px;
@@ -785,12 +879,12 @@ button { cursor: pointer; }
 /* The strip is the only thing that needs to give way on a narrow screen: the crew scrolls
    horizontally already, so the brand and the ⌘K label are what get shortened. */
 @media (max-width: 760px) {
-  .strip { gap: 10px; padding: 8px 10px; }
+  .deck, .band { gap: 10px; padding-left: 10px; padding-right: 10px; }
   .stage { padding: 0 10px 8px; }
   .fb-tree { width: 180px; }
-  .strip-brand button { max-width: 12ch; }
-  .strip-k { padding: 6px 9px; }
-  .strip-k span { display: none; }
+  .deck-project { max-width: 11ch; }
+  .deck-k { padding: 6px 9px; }
+  .deck-k span { display: none; }
   .crew-member-name { max-width: 9ch; }
 }
 
@@ -1154,7 +1248,7 @@ button { cursor: pointer; }
   gap: 6px;
   height: 28px;
   padding: 0 11px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
   background: transparent;
   color: var(--text-muted);
@@ -1206,7 +1300,7 @@ button { cursor: pointer; }
   gap: 1px;
   max-width: 220px;
   padding: 3px 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
   background: var(--panel);
   color: var(--text);
@@ -1228,45 +1322,6 @@ button { cursor: pointer; }
   border-color: #e0685a;
 }
 .crew-remove .crew-remove-cancel { align-items: center; color: var(--text-muted); }
-
-/* ---------------------------------------------------------------- agent pages */
-/* One tab per CLI you run agents on. Sits left of the faces and is the only thing in the strip
-   that changes *what* the rail lists rather than which face is selected, so it reads as a quieter
-   row of words rather than another set of chips competing with the agent picker.
-   Fixed height and no border-width change between states: this row sits directly above the
-   terminal, and anything here that changes size resizes the terminal (KNOWN_ISSUES.md). */
-.crew-pages {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex: 0 0 auto;
-  padding-right: 10px;
-  margin-right: 4px;
-  border-right: 1px solid var(--border);
-}
-.crew-page {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 26px;
-  padding: 0 9px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--text-faint);
-  font: inherit;
-  font-size: 12.5px;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: color 0.16s ease, background 0.16s ease;
-}
-.crew-page:hover { color: var(--text); background: var(--surface-2, rgba(128, 128, 128, 0.1)); }
-.crew-page.is-on { color: var(--text); background: var(--surface-2, rgba(128, 128, 128, 0.14)); font-weight: 500; }
-.crew-page-count {
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  opacity: 0.6;
-}
 
 /* The project a face belongs to, shown only when the page spans more than one. Second line under
    the name, quieter than it, because it answers "where does this one live" -- a question you ask
@@ -1297,7 +1352,7 @@ button { cursor: pointer; }
   pointer-events: none;
   background: var(--panel, #1a1815);
   color: var(--text-muted, #b9b2a3);
-  border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+  border: 1px solid var(--border-strong);
   animation: term-flash-in 140ms ease-out;
 }
 .term-flash[data-ok='no'] { color: #e0685a; border-color: rgba(224, 104, 90, 0.4); }

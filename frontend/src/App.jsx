@@ -12,6 +12,7 @@ import Settings from './components/Settings.jsx';
 import Admin from './components/Admin.jsx';
 import NewProjectModal from './components/NewProjectModal.jsx';
 import CrewRail from './components/CrewRail.jsx';
+import AgentPages from './components/AgentPages.jsx';
 import CommandPalette from './components/CommandPalette.jsx';
 import TeleportCard from './components/TeleportCard.jsx';
 import ProjectTools from './components/ProjectTools.jsx';
@@ -22,6 +23,7 @@ import {
   createProject,
   listCrew,
   listAgents,
+  wakeSession,
   deleteSession,
   quitSession,
   getTokenUsage,
@@ -120,15 +122,35 @@ export default function App() {
     return list;
   }, []);
 
+  // What signing in lands you on. Signing in is meant to *be* access to a terminal, so this ends
+  // with a live terminal on screen -- and a terminal needs a folder to stand in. A brand new
+  // account used to be met by an empty state and a form asking it to name a project before it
+  // could type anything, which put a decision in front of the one thing it came for. The first
+  // folder is made here instead; the name is a starting point, not a commitment, and projects can
+  // be added and removed freely afterwards.
+  //
+  // If making it fails -- over quota, or another tab got there first -- the empty state is still
+  // behind this and still explains itself, so this never blocks the way in.
+  const landAfterSignIn = useCallback(async () => {
+    let list = await refreshProjects();
+    if (!list.length) {
+      try {
+        await createProject('home', { agent: 'claude' });
+        list = await refreshProjects();
+      } catch {
+        /* the empty state takes it from here */
+      }
+    }
+    if (list.length) selectProject(list[0].name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshProjects]);
+
   useEffect(() => {
     authStatus()
       .then(async (s) => {
         setAuthed(s.authenticated);
         setRole(s.role || null);
-        if (s.authenticated) {
-          const list = await refreshProjects();
-          if (list.length) selectProject(list[0].name);
-        }
+        if (s.authenticated) await landAfterSignIn();
       })
       .catch(() => setAuthed(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -311,22 +333,33 @@ export default function App() {
   // you wanted it, since the page you are on is also what the `+` creates. You could not get to
   // the OpenCode page to make your first OpenCode agent.
   //
-  // A CLI that is not installed in this container gets no page, because that page could only
-  // offer you a face that cannot run -- unless agents of that kind already exist, in which case
-  // hiding them would hide real sessions.
+  // Every CLI this build knows about gets one, installed or not. An uninstalled one is listed and
+  // not clickable with the reason said out loud (AgentPages.jsx) rather than left out: a missing
+  // page answers "where is Codex?" with silence, while an open one would offer a face that could
+  // never start.
   const pageOrder = agents.length ? agents.map((a) => a.id) : ['claude'];
   const inCrew = new Set(crew.map((s) => s.agent || 'claude'));
-  const pageIds = [
-    ...new Set([...agents.filter((a) => a.available).map((a) => a.id), ...inCrew]),
-  ].sort((x, y) => pageOrder.indexOf(x) - pageOrder.indexOf(y));
+  const rank = (id) => (pageOrder.indexOf(id) === -1 ? 99 : pageOrder.indexOf(id));
+  const pageIds = [...new Set([...pageOrder, ...inCrew])].sort((x, y) => rank(x) - rank(y));
   const agentPages = pageIds.map((id) => ({
     id,
     label: agents.find((a) => a.id === id)?.label || id,
+    // Unknown to /api/agents but present in the crew: a real session of a kind this build no
+    // longer lists. Treated as available because it plainly was once, and its faces must open.
+    available: agents.find((a) => a.id === id)?.available ?? true,
     count: crew.filter((s) => (s.agent || 'claude') === id).length,
   }));
   // Follows the agent you are actually talking to unless you have picked a page yourself, so
   // clicking into a DeepCode session does not leave you looking at the Claude page.
-  const fallbackPage = activeRecord?.agent || (pageIds.includes(projectAgent) ? projectAgent : pageIds[0]) || 'claude';
+  const fallbackPage =
+    activeRecord?.agent ||
+    // The page this folder's crew actually lives on, which is not always the agent the folder was
+    // declared with. `zmain` is a declared DeepCode project whose entire crew is Claude, so
+    // selecting it on the folder's declaration landed you on an empty DeepCode page -- the view
+    // saying the folder was empty while its agents sat one tab away.
+    crewOfProject[0]?.agent ||
+    (pageIds.includes(projectAgent) ? projectAgent : pageIds[0]) ||
+    'claude';
   const activePage = agentPage && pageIds.includes(agentPage) ? agentPage : fallbackPage;
   const pageCrew = crew.filter((s) => (s.agent || 'claude') === activePage);
   // Only worth naming each face's project when the page actually spans more than one.
@@ -507,8 +540,7 @@ export default function App() {
           const s = await authStatus();
           setAuthed(true);
           setRole(s.role || null);
-          const list = await refreshProjects();
-          if (list.length) selectProject(list[0].name);
+          await landAfterSignIn();
         }}
       />
     );
@@ -525,51 +557,85 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      {/* Two bands, one job each, instead of one strip carrying all of them. Everything used to
+          sit on a single row: the name, the folder, the CLI tabs, every face, the start button,
+          the remove button and ⌘K, competing for the same horizontal space and scrolling when
+          they ran out of it. Split by question instead -- the deck answers "where am I and which
+          tool", the band answers "who, and what can I do with them" -- and each row becomes
+          scannable without re-reading the other.
+
+          Both are fixed-height on purpose. They sit directly above the terminal, so a row that
+          grows or shrinks resizes the terminal under it, which is the exact path this page's
+          long-standing flicker ran down (AGENT_CONTEXT/KNOWN_ISSUES.md). */}
       {!focus && (
-        <div className="strip">
-          <div className="strip-brand">
+        <div className="deck">
+          <div className="deck-brand">
             <b>codez</b>
+            {/* The folder, as a real control rather than a word that opens the palette. It is
+                where the `+` below makes its agent and where every terminal on this page stands,
+                so it is worth being able to see and change it without knowing a shortcut first.
+                A native select: nothing to load, nothing to lay out, and already familiar to
+                someone who has never used a command palette in their life. */}
             {activeProject && (
               <>
                 <span>/</span>
-                <button type="button" onClick={() => setPaletteOpen(true)} title="Switch project">
-                  {activeProject}
+                <select
+                  className="deck-project"
+                  aria-label="Project"
+                  value={activeProject}
+                  onChange={(e) => selectProject(e.target.value)}
+                >
+                  {projects.map((p) => (
+                    <option key={p.name} value={p.name}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="deck-newproject"
+                  onClick={() => setNewProjectOpen(true)}
+                  title="New project — another folder, with its own crew"
+                  aria-label="New project"
+                >
+                  +
                 </button>
               </>
             )}
           </div>
 
-          {activeProject && (
-            <CrewRail
-              project={activeProject}
-              activeSession={activeSession}
-              sessions={pageCrew}
-              showProjects={pageSpansProjects}
-              pages={agentPages}
-              activePage={activePage}
-              onPage={setAgentPage}
-              onSelect={openSession}
-              activity={activity}
-              awake={awake}
-              running={running}
-              onResume={resumeSession}
-              onQuit={quitActive}
-              onRemove={removeSession}
-              onChanged={refreshCrew}
-              agents={agents}
-              defaultAgent={activePage}
-              onCreated={autoWake}
-            />
-          )}
+          <AgentPages pages={agentPages} active={activePage} onPick={setAgentPage} />
 
-          <div className="strip-spacer" />
+          <div className="deck-spacer" />
 
-          <button type="button" className="strip-k" onClick={() => setPaletteOpen(true)}>
+          <button type="button" className="deck-k" onClick={() => setPaletteOpen(true)}>
             {/* The label is in a span so the narrow-screen rule can drop it and leave the key
                 cap, which is the part that still makes sense with no room for words. */}
             <span>Do anything</span>
             <kbd>⌘K</kbd>
           </button>
+        </div>
+      )}
+
+      {!focus && activeProject && (
+        <div className="band">
+          <CrewRail
+            project={activeProject}
+            activeSession={activeSession}
+            sessions={pageCrew}
+            showProjects={pageSpansProjects}
+            onSelect={openSession}
+            activity={activity}
+            awake={awake}
+            running={running}
+            onResume={resumeSession}
+            onQuit={quitActive}
+            onRemove={removeSession}
+            onChanged={refreshCrew}
+            agents={agents}
+            defaultAgent={activePage}
+            onCreated={autoWake}
+          />
         </div>
       )}
 

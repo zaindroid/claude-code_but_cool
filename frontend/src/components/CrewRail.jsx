@@ -27,9 +27,6 @@ export default function CrewRail({
   activeSession,
   sessions = [],
   showProjects = false,
-  pages = [],
-  activePage = 'claude',
-  onPage,
   onSelect,
   onResume,
   onQuit,
@@ -132,39 +129,10 @@ export default function CrewRail({
 
   return (
     <div className="crew-rail">
-      {/* One page per CLI you have agents on, each listing that CLI's agents from every project.
-          Shown only once you actually run more than one, on the same principle as the agent marks
-          on the faces: with a single-CLI crew there is nothing to choose between, so the tabs
-          would be chrome that teaches you nothing.
-
-          Grouping this way rather than by project is not cosmetic. A Claude session's name is
-          unique across the whole account and is how other agents address it, so every face on the
-          Claude page is a peer that can message every other one -- which is exactly what the
-          project-shaped view hid. The other CLIs have no equivalent, and their pages say so. */}
-      {pages.length > 1 && (
-        <div className="crew-pages" role="tablist" aria-label="Agent pages">
-          {pages.map((pg) => (
-            <button
-              key={pg.id}
-              type="button"
-              role="tab"
-              aria-selected={pg.id === activePage}
-              className={`crew-page ${pg.id === activePage ? 'is-on' : ''}`}
-              onClick={() => onPage?.(pg.id)}
-              title={
-                pg.count === 0
-                  ? `No ${pg.label} agents yet — + makes one here`
-                  : pg.id === 'claude'
-                    ? `${pg.count} Claude Code ${pg.count === 1 ? 'agent' : 'agents'} — all peers, each reachable by name`
-                    : `${pg.count} ${pg.label} ${pg.count === 1 ? 'agent' : 'agents'} — each runs on its own, not addressable by name`
-              }
-            >
-              {pg.label}
-              <span className="crew-page-count">{pg.count}</span>
-            </button>
-          ))}
-        </div>
-      )}
+      {/* The page tabs used to live here. They are the whole logged-in page's navigation, not a
+          control of this rail, so they moved up into the deck -- see AgentPages.jsx. What is left
+          here is one job: the faces on the page you are standing on, and what you can do to the
+          one you have picked. */}
 
       <div className="crew-faces">
         {sessions.map((s) => {
