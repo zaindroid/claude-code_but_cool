@@ -25,7 +25,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # for one of them can't take Claude Code down with it. `/api/agents` checks which of these actually
 # landed with a live `command -v` at request time (see agents.js's isOnPath) -- the frontend never
 # just trusts that this section worked.
-RUN npm install -g @anthropic-ai/claude-code
+# Pinned, and the pin is what makes updates work at all.
+#
+# Unpinned, this is one `RUN` layer with a string that never changes, so Docker reuses the cached
+# layer on every build and the CLI never moves. Live proof: the container was serving 2.1.197 while
+# npm was publishing 2.1.310 -- 113 versions of drift across many redeploys, none of which
+# reinstalled anything. Bumping this number changes the layer, which is the only reliable way to
+# say "actually fetch it again", and it makes each upgrade a deliberate, reviewable change rather
+# than an accident of which layer happened to miss the cache.
+RUN npm install -g @anthropic-ai/claude-code@2.1.310
 RUN npm install -g @openai/codex || echo "codex install failed -- will show as unavailable"
 # The installer drops the real binary under $HOME (== /root here, since this stage builds as
 # root) -- fine for root's own shell, but every account's own terminal runs as that account's own

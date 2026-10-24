@@ -22,7 +22,7 @@ import {
 import { listUsers, createUser, setUserQuota, reconcileOsUsers, isFirstBoot } from './users.js';
 import { listProjects, createProject, projectPath } from './projects.js';
 import { listDir, readFile } from './files.js';
-import { attachTerminal, liveSessionNames, busySessionNames, killTerminal } from './pty.js';
+import { attachTerminal, liveSessionNames, busySessionNames, killTerminal, wakeSession } from './pty.js';
 import { readSettingsForClient, writeSettings, clearAuthToken, PRESETS } from './settings.js';
 import { duBytes, PLATFORM_QUOTA_BYTES, GB } from './diskUsage.js';
 import { listAgents, getAgent } from './agents.js';
@@ -445,6 +445,41 @@ app.get('/api/projects/:project/sessions/:id/launch', (req, res) => {
     command: launchCommand(session, { resume, fork: req.query.fork === '1' }),
     resume,
   });
+});
+
+// Wakes a session: works out the right command and types it into the session's shell, starting
+// that shell first if it is not running.
+//
+// The frontend used to do this itself, and it was the most fragile thing in the app -- it needed
+// the terminal pane mounted, its send function registered, and for a just-started shell an output
+// event within eight seconds or the command was dropped in silence. The case that broke it is the
+// ordinary one: quit Claude and the shell sits at a bare prompt, emitting nothing ever again, so a
+// wake waiting on "first output" waited for a byte that was never coming. You were left at a
+// prompt with no way back into the agent except knowing what to type.
+//
+// Deciding resume-vs-fresh stays here, where /launch already does it, because the answer comes
+// from the filesystem: `--session-id` on a uuid that already has a transcript and `--resume` on one
+// that does not are both hard errors.
+app.post('/api/projects/:project/sessions/:id/wake', async (req, res) => {
+  const dir = requireProjectDir(req, res);
+  if (!dir) return;
+  const session = findSessionById(req.user, req.params.project, req.params.id);
+  if (!session) return res.status(404).json({ error: 'Unknown session' });
+  const resume = hasTranscript(req.user, dir, session);
+  const command = launchCommand(session, { resume, fork: req.body?.fork === true });
+  try {
+    const woken = await wakeSession(req.user, {
+      project: req.params.project,
+      session: session.name,
+      command,
+      cols: Number(req.body?.cols) || 80,
+      rows: Number(req.body?.rows) || 24,
+    });
+    if (!woken) return res.status(404).json({ error: 'Unknown project' });
+    res.json({ ...woken, resume });
+  } catch (err) {
+    sendError(res, err);
+  }
 });
 
 app.get('/api/projects/:project/mcp', (req, res) => {

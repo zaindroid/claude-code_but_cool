@@ -126,12 +126,21 @@ export function killTerminal(user, project, session) {
   return { wasRunning: true };
 }
 
-export function attachTerminal(ws, user, { project, session, sessionId, cols, rows }) {
+// Gets the terminal for this session, starting one if there isn't one.
+//
+// Split out of attachTerminal because a shell is no longer something only a WebSocket can bring
+// into being: waking a session does it too, from an HTTP request, possibly with no browser
+// attached at all. Everything here is deliberately independent of who asked.
+//
+// `fresh` is the one fact a caller cannot work out for itself and most needs: is this the shell it
+// was talking to a moment ago, or a brand new one? Both look identical from outside -- a terminal
+// that exists -- but they mean opposite things. A reattach means the agent is still running and
+// mid-thought. A fresh shell means it is gone and the conversation above the prompt is history.
+// Leaving the client to guess is what made a redeploy feel like the session had died: the
+// scrollback still showed Claude, so you typed at it.
+function ensureTerminal(user, { project, session, sessionId, cols, rows }) {
   const projectDir = projectPath(user, project);
-  if (!projectDir) {
-    ws.close(4004, 'Unknown project');
-    return;
-  }
+  if (!projectDir) return null;
 
   // A named session opens in its own folder; a plain terminal, and any session made before
   // folders existed, opens in the project root. The existence check is not paranoia: the folder
@@ -145,57 +154,112 @@ export function attachTerminal(ws, user, { project, session, sessionId, cols, ro
 
   const key = terminalKey(user, { project, session, sessionId });
   let entry = terminals.get(key);
-  // The one fact the client cannot work out for itself, and the one it most needs: is the thing
-  // on the other end of this socket the shell it was talking to a moment ago, or a brand new one?
-  // Both look identical from the browser -- a socket that opened -- but they mean opposite things.
-  // A reattach means your agent is still running and mid-thought. A fresh shell means it is gone
-  // and the conversation above the prompt is history. Leaving the client to guess is what made a
-  // redeploy feel like the session died: the scrollback still showed Claude, so you typed at it.
   const fresh = !entry;
 
   if (entry) {
-    // Reattaching: cancel any pending teardown so the live shell isn't torn down underneath the
-    // viewer that just arrived.
+    // Cancel any pending teardown so a live shell isn't torn down underneath whoever just arrived.
     clearTimeout(entry.timeout);
     entry.timeout = null;
-  } else {
-    // Read fresh on every new terminal, not cached at startup, so a settings change applies to
-    // the next terminal opened without needing to restart the whole app -- an already-running
-    // shell keeps whatever env it started with, same as exporting a variable in any real shell.
-    const term = pty.spawn('su', [user.linuxUsername, '-s', SHELL], {
-      name: 'xterm-256color',
-      cols: cols || 80,
-      rows: rows || 24,
-      cwd,
-      env: {
-        HOME: user.homeDir,
-        USER: user.linuxUsername,
-        PATH: process.env.PATH,
-        TERM: 'xterm-256color',
-        // Lets anything running inside the shell know which named session it is -- including the
-        // session itself, so a skill or hook can identify its own crew name without being told.
-        ...(session ? { CODEZ_SESSION: session, CODEZ_PROJECT: project } : {}),
-        ...providerEnv(user),
-      },
-    });
-
-    entry = { term, viewers: new Set(), chunks: [], bytes: 0, onData: null, onExit: null, timeout: null, named: Boolean(session) };
-
-    // Registered once per terminal, not once per viewer. The previous version attached a fresh
-    // onData listener inside each attach, which was fine while exactly one socket could ever be
-    // attached, but double-delivers the moment two viewers share a terminal -- which is now the
-    // supported case, not an edge case.
-    entry.onData = term.onData((data) => {
-      remember(entry, data);
-      for (const viewer of entry.viewers) send(viewer, { type: 'data', data });
-    });
-    entry.onExit = term.onExit(({ exitCode }) => {
-      for (const viewer of entry.viewers) send(viewer, { type: 'exit', exitCode });
-      destroy(key, entry);
-    });
-
-    terminals.set(key, entry);
+    return { key, entry, fresh };
   }
+
+  // Read fresh on every new terminal, not cached at startup, so a settings change applies to
+  // the next terminal opened without needing to restart the whole app -- an already-running
+  // shell keeps whatever env it started with, same as exporting a variable in any real shell.
+  const term = pty.spawn('su', [user.linuxUsername, '-s', SHELL], {
+    name: 'xterm-256color',
+    cols: cols || 80,
+    rows: rows || 24,
+    cwd,
+    env: {
+      HOME: user.homeDir,
+      USER: user.linuxUsername,
+      PATH: process.env.PATH,
+      TERM: 'xterm-256color',
+      // Lets anything running inside the shell know which named session it is -- including the
+      // session itself, so a skill or hook can identify its own crew name without being told.
+      ...(session ? { CODEZ_SESSION: session, CODEZ_PROJECT: project } : {}),
+      ...providerEnv(user),
+    },
+  });
+
+  entry = { term, viewers: new Set(), chunks: [], bytes: 0, onData: null, onExit: null, timeout: null, named: Boolean(session), spoke: false };
+
+  // Registered once per terminal, not once per viewer. The previous version attached a fresh
+  // onData listener inside each attach, which was fine while exactly one socket could ever be
+  // attached, but double-delivers the moment two viewers share a terminal -- which is now the
+  // supported case, not an edge case.
+  entry.onData = term.onData((data) => {
+    entry.spoke = true;
+    remember(entry, data);
+    for (const viewer of entry.viewers) send(viewer, { type: 'data', data });
+  });
+  entry.onExit = term.onExit(({ exitCode }) => {
+    for (const viewer of entry.viewers) send(viewer, { type: 'exit', exitCode });
+    destroy(key, entry);
+  });
+
+  terminals.set(key, entry);
+  // A shell with no viewer would otherwise sit forever: the reaper only arms when the last viewer
+  // leaves, and one that never had a viewer never leaves. Named sessions are exempt because they
+  // are meant to outlive the tab -- that is the whole point of waking one without a browser.
+  if (!session) {
+    entry.timeout = setTimeout(() => {
+      if (terminals.get(key) === entry && entry.viewers.size === 0) destroy(key, entry);
+    }, RECONNECT_GRACE_MS);
+  }
+  return { key, entry, fresh };
+}
+
+// Types a command into a session's shell, starting the shell first if it is not running.
+//
+// This exists because the browser could not be trusted to do it. Resuming used to mean the page
+// typing the command itself, which depended on a chain of things that are all true most of the
+// time: the terminal pane mounted, its send function registered, and -- for a shell that had just
+// started -- an output event arriving within eight seconds, or the command was discarded without a
+// word. Worst of all was the case someone actually hits: quit Claude, and the shell sits at a bare
+// prompt emitting nothing ever again, so a wake armed on "first output" waited for a byte that was
+// never coming.
+//
+// The server has none of those problems. It holds the pty, it sees the prompt itself, and it does
+// not need a tab to be open to do any of this.
+export async function wakeSession(user, { project, session, command, cols, rows }) {
+  const found = ensureTerminal(user, { project, session, cols, rows });
+  if (!found) return null;
+  const { entry, fresh } = found;
+
+  // A shell that has just been spawned is not reading yet, and a command written into it before
+  // then is simply lost. Its first byte is the prompt, which is the real "ready" signal -- better
+  // than a fixed delay, which would either fire too early or wait longer than it needs to. The
+  // timeout is a floor, not the plan: if the shell has somehow said nothing by then, writing
+  // anyway beats silently doing nothing, which is the behaviour being fixed here.
+  if (fresh && !entry.spoke) {
+    await new Promise((resolve) => {
+      const done = () => {
+        clearInterval(poll);
+        clearTimeout(cap);
+        resolve();
+      };
+      const poll = setInterval(() => entry.spoke && done(), 40);
+      const cap = setTimeout(done, 3000);
+    });
+  }
+
+  entry.term.write(`${command}\r`);
+  return { startedShell: fresh, command };
+}
+
+export function attachTerminal(ws, user, { project, session, sessionId, cols, rows }) {
+  const found = ensureTerminal(user, { project, session, sessionId, cols, rows });
+  if (!found) {
+    ws.close(4004, 'Unknown project');
+    return;
+  }
+  // `fresh` now means "this very call started the shell", which is slightly narrower than before
+  // and is the correct reading. A session woken from an HTTP request runs for a moment with no
+  // viewer, so the tab that arrives afterwards is a reattach, not a fresh shell -- and gets the
+  // replay, which is exactly right: the wake's own output is what it needs to see.
+  const { key, entry, fresh } = found;
 
   ws.codezAlive = true;
   ws.on('pong', () => {

@@ -68,6 +68,15 @@ export const createSession = (project, name, agent) =>
   call(`/api/projects/${encodeURIComponent(project)}/sessions`, { method: 'POST', body: JSON.stringify({ name, agent }) });
 export const updateSession = (project, id, patch) =>
   call(`/api/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) });
+// Starts the agent in this session's shell, starting the shell too if it is not running. The
+// server types the command, having decided resume-vs-fresh from the transcript on disk -- the page
+// no longer needs a mounted terminal, a registered sender, or an output event it might never get.
+export const wakeSession = (project, id, { fork = false, cols, rows } = {}) =>
+  call(`/api/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(id)}/wake`, {
+    method: 'POST',
+    body: JSON.stringify({ fork, cols, rows }),
+  });
+
 // Stops the shell, leaves the session. The counterpart to waking one.
 export const quitSession = (project, id) =>
   call(`/api/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(id)}/quit`, { method: 'POST' });

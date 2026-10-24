@@ -22,7 +22,6 @@ import {
   createProject,
   listCrew,
   listAgents,
-  sessionLaunchCommand,
   deleteSession,
   quitSession,
   getTokenUsage,
@@ -95,7 +94,6 @@ export default function App() {
   // would close over stale state. Keyed per terminal rather than being a single slot: a server
   // restart brings every open terminal back at the same moment, and one slot meant one of them
   // got its agent and the rest silently did not.
-  const pendingWakeRef = useRef({});
   // Mirrors of state that the stable websocket callbacks below need to read. Same reason as
   // above -- they are registered once per terminal and would otherwise see the first render's
   // values forever.
@@ -180,34 +178,12 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  const noteActivity = useCallback((session, project) => {
+  // Waiting for the shell to speak used to live here: a wake was armed, and the first byte of
+  // output fired it. That is gone, and the arming with it. The server now waits for its own pty's
+  // prompt, which it can actually see -- and which works for the case this never could, a shell
+  // already sitting at a prompt with no further output coming.
+  const noteActivity = useCallback((session) => {
     activityRef.current = { ...activityRef.current, [session]: Date.now() };
-    // First output from a new shell is its prompt, which is the real "ready to take a command"
-    // signal -- better than a timer, which would either fire into a shell that isn't reading yet
-    // or wait longer than it needs to.
-    const key = termKey(project, session);
-    const pending = pendingWakeRef.current[key];
-    if (pending) {
-      delete pendingWakeRef.current[key];
-      clearTimeout(pending.timer);
-      runWake(pending.project, pending.record);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Arms the launch, rather than launching now: the shell on the other end may not be reading
-  // yet. noteActivity above fires it the moment that shell speaks.
-  const armWake = useCallback((project, record) => {
-    const key = termKey(project, record.name);
-    const prev = pendingWakeRef.current[key];
-    if (prev) clearTimeout(prev.timer);
-    const timer = setTimeout(() => {
-      // Abandoned rather than fired late: if a shell took this long, you have probably started
-      // typing in it yourself, and injecting a command underneath that would be worse than
-      // leaving you to press Wake.
-      delete pendingWakeRef.current[key];
-    }, 8000);
-    pendingWakeRef.current[key] = { project, record, timer };
   }, []);
 
   // A named session that came back to a *new* shell -- the server restarted, or a deploy replaced
@@ -221,9 +197,10 @@ export default function App() {
     (session, project) => {
       if (project !== activeProjectRef.current) return; // its crew isn't loaded; leave it to Wake
       const record = crewRef.current.find((s) => s.name === session);
-      if (record) armWake(project, record);
+      if (record) runWake(project, record);
     },
-    [armWake]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
   );
 
   useEffect(() => {
@@ -304,8 +281,7 @@ export default function App() {
     const record = crew.find((s) => s.name === name);
     if (!record) return;
     openSession(record);
-    if (awake.has(name)) runWake(record.project, record);
-    else armWake(record.project, record);
+    runWake(record.project, record);
   }
 
   async function handleCreate(name, opts) {
@@ -362,13 +338,22 @@ export default function App() {
     sendersRef.current[termKey(activeProject, session)]?.(`${command}\r`);
   }
 
-  // Typed into that session's own terminal, exactly as a person would. The command itself comes
-  // from the server, which picks start-vs-resume by looking at whether the transcript really
-  // exists, and for a non-Claude agent returns that tool's own plain launch command instead.
+  // Asks the server to type it, rather than typing it from here.
+  //
+  // This used to write through `sendersRef.current[key]?.(...)`, and that optional call was the
+  // bug: with no terminal mounted under that exact key it did nothing at all, silently, and the
+  // only sign was a Resume button that appeared to be broken. It also could not help the case that
+  // matters most -- a live shell sitting at a bare prompt after you quit Claude -- because the
+  // fallback path armed the command to fire on the shell's next output, and a shell at a prompt has
+  // no next output.
+  //
+  // The server holds the pty, so it has neither problem: it types into the session's own shell
+  // whether or not this page is looking at it, starts that shell if it is not running, and waits
+  // for a new shell's prompt itself. It still picks start-vs-resume from the transcript on disk,
+  // and for a non-Claude agent still sends that tool's own plain launch command.
   async function runWake(project, record, { fork = false } = {}) {
     if (!record) return;
-    const { command } = await sessionLaunchCommand(project, record.id, { fork });
-    sendersRef.current[termKey(project, record.name)]?.(`${command}\r`);
+    await wakeSession(project, record.id, { fork });
     setCrewVersion((v) => v + 1);
   }
 
@@ -380,7 +365,7 @@ export default function App() {
   // agent had not started. Now the agent you picked is launched for you, through the same visible
   // typed-command path, as soon as its shell is ready.
   function autoWake(session) {
-    armWake(session.project || activeProject, session);
+    runWake(session.project || activeProject, session);
   }
 
   // Ends the shell without touching the session. The rail asks for this on the selected agent; it
