@@ -678,23 +678,44 @@ app.patch('/api/admin/users/:id/quota', requireAdmin, (req, res) => {
 // therefore share 127.0.0.1, so without that check "preview port 3000" means "preview whoever
 // got to 3000 first" -- someone else's dev server, proxied through your own authenticated
 // session. See ports.js.
-function proxyToOwnPort(req, res, next, { port, stripPrefix }) {
+// One proxy per port, made once and kept. Two reasons, and the second one bit hard.
+//
+// `ws: true` makes http-proxy-middleware register a listener on the server's own `upgrade` event,
+// and that listener does not know which paths this middleware was mounted under -- it takes every
+// upgrade the process sees. Built fresh per request, as this was, each preview request added
+// another one, and from then on Codez's own terminal socket (/ws/terminal) was being handed to
+// whatever dev server the preview pointed at. Caught live: a `python3 -m http.server` logging a
+// steady stream of `GET /ws/terminal?project=... 404` while the terminal that started it sat
+// there reconnecting.
+//
+// So: no websockets through the preview. A dev server's hot reload will not come through, which
+// costs a page refresh; a terminal that cannot hold a socket costs the whole app. If HMR is worth
+// having later it needs one explicit upgrade handler that checks the path itself, not this flag.
+const previewProxies = new Map();
+function proxyForPort(port) {
+  if (!previewProxies.has(port))
+    previewProxies.set(
+      port,
+      createProxyMiddleware({
+        target: `http://127.0.0.1:${port}`,
+        changeOrigin: true,
+        ws: false,
+      })
+    );
+  return previewProxies.get(port);
+}
+
+function proxyToOwnPort(req, res, next, { port }) {
   if (!port || port < 1 || port > 65535) return res.status(400).json({ error: 'Missing or invalid preview port' });
   if (!isOwnPort(req.user, port))
     return res.status(404).json({ error: `Nothing of yours is listening on port ${port}` });
-  return createProxyMiddleware({
-    target: `http://127.0.0.1:${port}`,
-    changeOrigin: true,
-    ws: true,
-    ...(stripPrefix ? { pathRewrite: { [`^${stripPrefix}`]: '' } } : {}),
-  })(req, res, next);
+  return proxyForPort(port)(req, res, next);
 }
 
+// Express strips the matched mount path before the handler runs, so what reaches the proxy is
+// already the path the dev server expects -- no rewriting needed, and none attempted.
 app.use('/preview/:project/:port', requireAuth, (req, res, next) =>
-  proxyToOwnPort(req, res, next, {
-    port: Number(req.params.port),
-    stripPrefix: `/preview/${req.params.project}/${req.params.port}`,
-  })
+  proxyToOwnPort(req, res, next, { port: Number(req.params.port) })
 );
 
 // What a page asks for from the site root rather than from its own directory: Vite's `/@vite/client`
@@ -718,7 +739,8 @@ const staticDir = path.resolve(__dirname, '..', 'public');
 app.use(express.static(staticDir));
 // Anything left: a preview's own root-absolute asset, or the single-page app.
 app.use((req, res, next) => {
-  if (req.path.startsWith('/api') || req.path.startsWith('/preview')) return next();
+  // Codez's own routes are never somebody's dev-server asset, whatever referer they arrive with.
+  if (req.path.startsWith('/api') || req.path.startsWith('/preview') || req.path.startsWith('/ws/')) return next();
   const port = previewRefererPort(req);
   if (!port) return next();
   return requireAuth(req, res, () => proxyToOwnPort(req, res, next, { port }));
