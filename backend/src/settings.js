@@ -159,13 +159,26 @@ export function deepcodeEnv(user) {
 // which would have sent an OpenAI model name to DeepSeek's API and failed at request time, far
 // away from the setting that caused it. Naming a model with the provider is the fix.
 //
-// Only two are filled in, and that is deliberate: `deepseek/deepseek-chat` was run against the
-// real binary and resolved (and matches DeepSeek's own docs), and `openai/gpt-4o-mini` is
-// DeepCode's own default. The rest are blank rather than guessed -- a wrong model id here would
-// fail exactly like the bug above, so the settings page asks for one instead of inventing it.
+// The names are bare, with no `provider/` prefix, and that was learnt the hard way. Every entry in
+// DeepCode's registry has `strip_model_prefix: False`: whatever is written here is sent to the API
+// verbatim. `deepseek/deepseek-chat` resolved cleanly at startup -- the check this file first
+// relied on -- and then failed on the first real request, because startup only proves the string
+// parses, never that the provider serves it:
+//
+//   The supported API model names are deepseek-flash, deepseek-v4-pro,
+//   but you passed deepseek/deepseek-chat
+//
+// That error is where `deepseek-v4-pro` comes from: the API enumerated what it serves, which beats
+// both the public docs (which name deepseek-chat) and anything this file could infer. Bare names
+// are also the safe shape for a provider that *does* strip prefixes, since stripping a prefix that
+// is not there changes nothing.
+//
+// Only two are filled in, and the rest are blank rather than guessed -- a wrong model id fails in
+// exactly the way above: at the first request, with nothing pointing back at this setting. The
+// settings page asks for one instead of inventing it.
 export const DEEPCODE_PROVIDERS = [
-  { id: 'deepseek', label: 'DeepSeek', needsKey: true, defaultModel: 'deepseek/deepseek-chat' },
-  { id: 'openai', label: 'OpenAI', needsKey: true, defaultModel: 'openai/gpt-4o-mini' },
+  { id: 'deepseek', label: 'DeepSeek', needsKey: true, defaultModel: 'deepseek-v4-pro', knownModels: 'deepseek-v4-pro (stronger) or deepseek-flash (cheaper)' },
+  { id: 'openai', label: 'OpenAI', needsKey: true, defaultModel: 'gpt-4o-mini' },
   { id: 'anthropic', label: 'Anthropic', needsKey: true, defaultModel: '' },
   { id: 'gemini', label: 'Google Gemini', needsKey: true, defaultModel: '' },
   { id: 'openrouter', label: 'OpenRouter', needsKey: true, defaultModel: '' },

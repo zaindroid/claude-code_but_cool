@@ -40,6 +40,10 @@ export default function Settings({ onClose, agents = [], loginCmd = {}, onRun })
       // Opened only if there is already something to see. Someone who has configured a provider
       // should not have to go looking for the setting they made.
       setShowClaudeProvider(s.provider !== 'anthropic' || s.hasAuthToken);
+      // Filled in on load too, not only when the provider changes. A saved provider with no saved
+      // model showed an empty box under a line claiming it was filled in -- and the backend's own
+      // fallback meant the config had a model the page was not showing.
+      const dcSpec = (deepcodeProviders || []).find((p) => p.id === s.deepcodeProvider);
       setForm({
         provider: s.provider,
         baseUrl: s.baseUrl,
@@ -48,7 +52,7 @@ export default function Settings({ onClose, agents = [], loginCmd = {}, onRun })
         authToken: '',
         deepcodeProvider: s.deepcodeProvider || '',
         deepcodeBaseUrl: s.deepcodeBaseUrl || '',
-        deepcodeModel: s.deepcodeModel || '',
+        deepcodeModel: s.deepcodeModel || dcSpec?.defaultModel || '',
         deepcodeKey: '',
       });
     });
@@ -283,9 +287,11 @@ export default function Settings({ onClose, agents = [], loginCmd = {}, onRun })
                       fallback is an OpenAI model name whatever provider you picked, so a blank
                       box here fails on the first request, nowhere near this screen. */}
                   <span className="settings-subhint">
-                    {dcSpec.defaultModel
-                      ? `Filled in for ${dcSpec.label}. Change it if you want a different one.`
-                      : `Required — DeepCode has no default for ${dcSpec.label}, and its fallback is an OpenAI model that this provider will reject.`}
+                    {dcSpec.knownModels
+                      ? `Name it exactly as the provider does — no "${dcSpec.id}/" prefix, it is sent through as typed. ${dcSpec.label} serves ${dcSpec.knownModels}.`
+                      : dcSpec.defaultModel
+                        ? `Filled in for ${dcSpec.label}. Name it exactly as the provider does — it is sent through as typed, with no prefix.`
+                        : `Required — DeepCode has no default for ${dcSpec.label}, and its fallback is an OpenAI model this provider will reject. Name it exactly as the provider does, with no prefix.`}
                   </span>
                 </label>
               )}
