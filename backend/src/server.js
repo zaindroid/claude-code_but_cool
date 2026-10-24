@@ -700,6 +700,18 @@ function proxyForPort(port) {
         target: `http://127.0.0.1:${port}`,
         changeOrigin: true,
         ws: false,
+        on: {
+          // Nothing a preview serves may be cached, by the browser or by anything in front of it.
+          // This site sits behind Cloudflare, which caches a path ending in .css on sight -- caught
+          // live: a stylesheet fetched once never reached the dev server again, so the preview
+          // would have gone on showing an old version of a file the agent had already rewritten.
+          // A preview of work in progress is the one thing that must always be the current bytes.
+          proxyRes: (proxyRes) => {
+            proxyRes.headers['cache-control'] = 'no-store, no-cache, must-revalidate';
+            delete proxyRes.headers.etag;
+            delete proxyRes.headers['last-modified'];
+          },
+        },
       })
     );
   return previewProxies.get(port);

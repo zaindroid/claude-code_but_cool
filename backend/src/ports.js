@@ -58,7 +58,16 @@ function namesByInode(wanted, uid) {
     try {
       if (fs.statSync(`/proc/${pid}`).uid !== uid) continue;
       for (const fd of fs.readdirSync(`/proc/${pid}/fd`)) {
-        const link = fs.readlinkSync(`/proc/${pid}/fd/${fd}`);
+        // Per descriptor, not per process. A file descriptor can close between the readdir and
+        // the readlink, and with one try around the whole loop that one throw abandoned every
+        // remaining fd of that process -- including, in practice, the listening socket we came
+        // for. Which is why this scan found nothing at all the first time it ran live.
+        let link;
+        try {
+          link = fs.readlinkSync(`/proc/${pid}/fd/${fd}`);
+        } catch {
+          continue;
+        }
         const m = /^socket:\[(\d+)\]$/.exec(link);
         if (!m || !wanted.has(m[1]) || names.has(m[1])) continue;
         // The first line of cmdline, or comm as a fallback: "vite" and "node" are both more use
