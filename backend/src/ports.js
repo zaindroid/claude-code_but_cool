@@ -34,79 +34,33 @@ function parseTable(file, uid) {
     const local = col[1];
     const port = parseInt(local.slice(local.lastIndexOf(':') + 1), 16);
     if (!port) continue;
-    found.push({ port, inode: col[9], addr: local.slice(0, local.lastIndexOf(':')) });
+    found.push({ port });
   }
   return found;
 }
 
-// Which process is behind each socket, best-effort. Costs a walk of /proc, so it only runs when
-// there is something to attribute, and only over this account's own processes -- a uid check on
-// the /proc/<pid> directory itself, which is cheaper and more honest than parsing status files.
+// Why there is no process name beside each port.
 //
-// Best-effort is the right contract: a pid can exit between the socket table and the fd scan, and
-// a port with no name attached is still a port worth offering. Nothing here throws.
-function namesByInode(wanted, uid) {
-  const names = new Map();
-  if (!wanted.size) return names;
-  let pids;
-  try {
-    pids = fs.readdirSync('/proc').filter((e) => /^\d+$/.test(e));
-  } catch {
-    return names;
-  }
-  for (const pid of pids) {
-    try {
-      if (fs.statSync(`/proc/${pid}`).uid !== uid) continue;
-      for (const fd of fs.readdirSync(`/proc/${pid}/fd`)) {
-        // Per descriptor, not per process. A file descriptor can close between the readdir and
-        // the readlink, and with one try around the whole loop that one throw abandoned every
-        // remaining fd of that process -- including, in practice, the listening socket we came
-        // for. Which is why this scan found nothing at all the first time it ran live.
-        let link;
-        try {
-          link = fs.readlinkSync(`/proc/${pid}/fd/${fd}`);
-        } catch {
-          continue;
-        }
-        const m = /^socket:\[(\d+)\]$/.exec(link);
-        if (!m || !wanted.has(m[1]) || names.has(m[1])) continue;
-        // The first line of cmdline, or comm as a fallback: "vite" and "node" are both more use
-        // than a bare number when you are deciding which of three ports to open.
-        let name = '';
-        try {
-          name = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean).slice(0, 2).join(' ');
-        } catch {
-          /* fall through to comm */
-        }
-        if (!name) {
-          try {
-            name = fs.readFileSync(`/proc/${pid}/comm`, 'utf8').trim();
-          } catch {
-            /* unnamed is fine */
-          }
-        }
-        names.set(m[1], { pid: Number(pid), command: name.slice(0, 80) });
-      }
-    } catch {
-      /* the process went away mid-walk, or its fds are not ours to read */
-    }
-  }
-  return names;
-}
+// Mapping a socket to the process holding it means matching /proc/net/tcp's inode against the
+// /proc/<pid>/fd symlinks, and reading another uid's fd directory requires PTRACE_MODE_READ --
+// which root only has with CAP_SYS_PTRACE. Docker's default capability set does not include it,
+// so this server, root though it is, gets EACCES on every account's fds.
+//
+// Measured rather than assumed: the same matching loop, run inside this container as the account
+// itself, reports `pids total 14, owned by uid 8, fd-unreadable 0, matches 1` and names the pid.
+// Run from the server it reads zero fds and names nothing. The code for it was here and did
+// exactly that -- a full /proc walk every poll, for every signed-in tab, that could never return
+// an answer. It is gone rather than left in looking plausible.
+//
+// If a name is ever worth having, the route is a helper run as the account (`su <user> -c ...`),
+// not a capability added to the whole container for a label.
 
 // Every port this account is listening on, deduplicated across the v4 and v6 tables -- a server
 // bound to both shows up twice down there and is one server up here.
 export function listOwnPorts(user) {
   const raw = [...parseTable('/proc/net/tcp', user.uid), ...parseTable('/proc/net/tcp6', user.uid)];
-  const names = namesByInode(new Set(raw.map((r) => r.inode)), user.uid);
-  const byPort = new Map();
-  for (const r of raw) {
-    const known = byPort.get(r.port);
-    const named = names.get(r.inode);
-    if (!known) byPort.set(r.port, { port: r.port, pid: named?.pid ?? null, command: named?.command || '' });
-    else if (!known.command && named) Object.assign(known, named);
-  }
-  return [...byPort.values()].sort((a, b) => a.port - b.port);
+  const ports = [...new Set(raw.map((r) => r.port))];
+  return ports.sort((a, b) => a - b).map((port) => ({ port }));
 }
 
 // The gate on the preview proxy. Asked per request rather than cached, because the answer changes

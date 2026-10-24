@@ -60,9 +60,8 @@ export default function Preview({ project, ports = [] }) {
               <li key={p.port}>
                 <button type="button" onClick={() => setChosen(p.port)}>
                   <span className="preview-port-num">:{p.port}</span>
-                  {/* The process holding the port. Three node servers are indistinguishable by
-                      number alone, and this is the line that tells them apart. */}
-                  {p.command && <span className="preview-port-cmd">{p.command}</span>}
+                  {/* No process name beside it: naming the process behind a socket needs
+                      CAP_SYS_PTRACE, which this container does not have. See ports.js. */}
                 </button>
               </li>
             ))}
