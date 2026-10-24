@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getSettings, saveSettings, clearAuthToken } from '../api.js';
+import { getSettings, saveSettings, clearSecret } from '../api.js';
 
 // One provider config, applied to every project's terminal the next time it opens (see
 // backend/src/pty.js) -- Anthropic itself needs nothing here at all if you'd rather just run
@@ -9,16 +9,30 @@ import { getSettings, saveSettings, clearAuthToken } from '../api.js';
 export default function Settings({ onClose }) {
   const [settings, setSettings] = useState(null);
   const [presets, setPresets] = useState(null);
+  const [dcProviders, setDcProviders] = useState([]);
+  const [dcReady, setDcReady] = useState(false);
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    getSettings().then(({ settings: s, presets: p }) => {
+    getSettings().then(({ settings: s, presets: p, deepcodeProviders, deepcodeConfigured }) => {
       setSettings(s);
       setPresets(p);
-      setForm({ provider: s.provider, baseUrl: s.baseUrl, model: s.model, smallModel: s.smallModel, authToken: '' });
+      setDcProviders(deepcodeProviders || []);
+      setDcReady(Boolean(deepcodeConfigured));
+      setForm({
+        provider: s.provider,
+        baseUrl: s.baseUrl,
+        model: s.model,
+        smallModel: s.smallModel,
+        authToken: '',
+        deepcodeProvider: s.deepcodeProvider || '',
+        deepcodeBaseUrl: s.deepcodeBaseUrl || '',
+        deepcodeModel: s.deepcodeModel || '',
+        deepcodeKey: '',
+      });
     });
   }, []);
 
@@ -39,9 +53,10 @@ export default function Settings({ onClose }) {
     setSaving(true);
     setError('');
     try {
-      const { settings: s } = await saveSettings(form);
+      const { settings: s, deepcodeConfigured } = await saveSettings(form);
       setSettings(s);
-      setForm((f) => ({ ...f, authToken: '' }));
+      setDcReady(Boolean(deepcodeConfigured));
+      setForm((f) => ({ ...f, authToken: '', deepcodeKey: '' }));
       setSaved(true);
     } catch (err) {
       setError(err.message || 'Could not save');
@@ -50,8 +65,8 @@ export default function Settings({ onClose }) {
     }
   }
 
-  async function clearToken() {
-    const { settings: s } = await clearAuthToken();
+  async function clear(field) {
+    const { settings: s } = await clearSecret(field);
     setSettings(s);
     setSaved(false);
   }
@@ -59,6 +74,7 @@ export default function Settings({ onClose }) {
   if (!form || !presets) return null;
 
   const isAnthropic = form.provider === 'anthropic';
+  const dcSpec = dcProviders.find((p) => p.id === form.deepcodeProvider) || null;
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -106,7 +122,7 @@ export default function Settings({ onClose }) {
               autoComplete="new-password"
             />
             {settings?.hasAuthToken && (
-              <button type="button" className="settings-clear" onClick={clearToken}>Clear saved key</button>
+              <button type="button" className="settings-clear" onClick={() => clear('authToken')}>Clear saved key</button>
             )}
           </label>
 
@@ -120,6 +136,83 @@ export default function Settings({ onClose }) {
               <input type="text" placeholder="default" value={form.smallModel} onChange={(e) => setForm({ ...form, smallModel: e.target.value })} />
             </label>
           </div>
+
+          {/* DeepCode's own credential, kept well away from the field above. That one becomes
+              ANTHROPIC_AUTH_TOKEN, and setting it takes Claude Code off a subscription login it is
+              already using -- which is how an account with an active Max plan came to be told it
+              was out of credit. Two tools, two keys, no shared slot. */}
+          {dcProviders.length > 0 && (
+            <div className="settings-section">
+              <div className="settings-section-head">
+                <h3>DeepCode</h3>
+                <span className={dcReady ? 'settings-ready' : 'settings-notready'}>
+                  {dcReady ? 'configured' : 'not configured'}
+                </span>
+              </div>
+              <p className="settings-note">
+                DeepCode has no account login — it reads an API key, and every provider it supports needs one.
+                Its key is kept apart from the one above, so setting it here cannot take Claude Code off your
+                subscription. Codez writes DeepCode's own config file; the key itself stays out of that file and
+                is handed to the shell as <code>DEEPCODE_API_KEY</code>.
+              </p>
+
+              <div className="settings-row">
+                <label className="settings-field">
+                  <span>Provider</span>
+                  <select
+                    value={form.deepcodeProvider}
+                    onChange={(e) => setForm({ ...form, deepcodeProvider: e.target.value })}
+                  >
+                    <option value="">Not set</option>
+                    {dcProviders.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="settings-field">
+                  <span>Model</span>
+                  <input
+                    type="text"
+                    placeholder="DeepCode's default"
+                    value={form.deepcodeModel}
+                    onChange={(e) => setForm({ ...form, deepcodeModel: e.target.value })}
+                  />
+                </label>
+              </div>
+
+              {dcSpec?.needsBaseUrl && (
+                <label className="settings-field">
+                  <span>{dcSpec.needsKey ? 'Base URL' : 'Server address'}</span>
+                  <input
+                    type="text"
+                    placeholder="http://127.0.0.1:11434"
+                    value={form.deepcodeBaseUrl}
+                    onChange={(e) => setForm({ ...form, deepcodeBaseUrl: e.target.value })}
+                  />
+                </label>
+              )}
+
+              {dcSpec?.needsKey && (
+                <label className="settings-field">
+                  <span>{dcSpec.label} API key</span>
+                  <input
+                    type="password"
+                    placeholder={settings?.hasDeepcodeKey ? '•••••••••••• (saved — type to replace)' : 'paste the key'}
+                    value={form.deepcodeKey}
+                    onChange={(e) => setForm({ ...form, deepcodeKey: e.target.value })}
+                    autoComplete="new-password"
+                  />
+                  {settings?.hasDeepcodeKey && (
+                    <button type="button" className="settings-clear" onClick={() => clear('deepcodeKey')}>
+                      Clear saved key
+                    </button>
+                  )}
+                </label>
+              )}
+            </div>
+          )}
 
           <p className="settings-hint">Applies to terminals opened after saving -- one already running keeps its current environment.</p>
 

@@ -11,8 +11,27 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chownToUser } from './osUsers.js';
 
-const FIELDS = ['provider', 'baseUrl', 'authToken', 'model', 'smallModel'];
-const DEFAULTS = { provider: 'anthropic', baseUrl: '', authToken: '', model: '', smallModel: '' };
+const FIELDS = ['provider', 'baseUrl', 'authToken', 'model', 'smallModel', 'deepcodeProvider', 'deepcodeKey', 'deepcodeBaseUrl', 'deepcodeModel'];
+const DEFAULTS = {
+  provider: 'anthropic',
+  baseUrl: '',
+  authToken: '',
+  model: '',
+  smallModel: '',
+  // DeepCode's own credential, deliberately its own field rather than a second use of authToken.
+  // That token is what Claude Code reads as ANTHROPIC_AUTH_TOKEN, and setting one there takes
+  // Claude off a subscription login it is already happily using -- the exact fault that produced
+  // "out of credit" on an account with an active Max plan. Two tools, two keys, no shared slot.
+  deepcodeProvider: '',
+  deepcodeKey: '',
+  deepcodeBaseUrl: '',
+  deepcodeModel: '',
+};
+
+// Which secrets never travel back to the browser, and what an empty string means for them: "leave
+// the existing value alone", not "clear it". Clearing is its own explicit action, because a blank
+// password field is the normal state of a form, not an instruction.
+const SECRETS = ['authToken', 'deepcodeKey'];
 
 function fileFor(user) {
   return path.join(user.homeDir, '.codez-settings.json.enc');
@@ -60,18 +79,25 @@ export function readSettings(user) {
 // as any password field. Every other field is plain, non-secret configuration.
 export function readSettingsForClient(user) {
   const s = readSettings(user);
-  return { provider: s.provider, baseUrl: s.baseUrl, model: s.model, smallModel: s.smallModel, hasAuthToken: !!s.authToken };
+  return {
+    provider: s.provider,
+    baseUrl: s.baseUrl,
+    model: s.model,
+    smallModel: s.smallModel,
+    hasAuthToken: !!s.authToken,
+    deepcodeProvider: s.deepcodeProvider,
+    deepcodeBaseUrl: s.deepcodeBaseUrl,
+    deepcodeModel: s.deepcodeModel,
+    hasDeepcodeKey: !!s.deepcodeKey,
+  };
 }
 
 export function writeSettings(user, patch) {
   const current = readSettings(user);
   const next = { ...current };
   for (const field of FIELDS) {
-    if (field === 'authToken') {
-      // An empty string from the form means "leave the existing token alone", not "clear it" --
-      // clearing is its own explicit action (clearAuthToken below), since a blank password field
-      // rendering as blank is the normal, expected state, not a signal to delete the real value.
-      if (typeof patch.authToken === 'string' && patch.authToken.length > 0) next.authToken = patch.authToken;
+    if (SECRETS.includes(field)) {
+      if (typeof patch[field] === 'string' && patch[field].length > 0) next[field] = patch[field];
     } else if (typeof patch[field] === 'string') {
       next[field] = patch[field];
     }
@@ -82,9 +108,10 @@ export function writeSettings(user, patch) {
   return readSettingsForClient(user);
 }
 
-export function clearAuthToken(user) {
+export function clearSecret(user, field) {
+  if (!SECRETS.includes(field)) throw Object.assign(new Error('Not a clearable secret'), { status: 400 });
   const current = readSettings(user);
-  current.authToken = '';
+  current[field] = '';
   const file = fileFor(user);
   fs.writeFileSync(file, encrypt(JSON.stringify(current)), 'utf8');
   chownToUser(file, user.uid, user.gid);
@@ -107,6 +134,32 @@ export function providerEnv(user) {
   if (s.smallModel) env.ANTHROPIC_SMALL_FAST_MODEL = s.smallModel;
   return env;
 }
+
+// DeepCode reads its key out of a JSON config, not out of the environment -- but that config may
+// write `${ENV_VAR}` where a key goes and resolve it at run time (core/config.py), which is the
+// form Codez uses. So the file on disk never holds the secret; this does, from the same encrypted
+// store as everything else here, and only for the shell that needs it.
+export function deepcodeEnv(user) {
+  const s = readSettings(user);
+  return s.deepcodeKey ? { DEEPCODE_API_KEY: s.deepcodeKey } : {};
+}
+
+// DeepCode's own provider registry, read from the installed package rather than remembered:
+// `python3 -c "from core.providers import registry"` lists exactly these. Every one of them wants
+// an API key -- none has an account login the way Claude Code does -- except the two local ones,
+// which want a running server instead.
+export const DEEPCODE_PROVIDERS = [
+  { id: 'openai', label: 'OpenAI', needsKey: true },
+  { id: 'anthropic', label: 'Anthropic', needsKey: true },
+  { id: 'deepseek', label: 'DeepSeek', needsKey: true },
+  { id: 'gemini', label: 'Google Gemini', needsKey: true },
+  { id: 'openrouter', label: 'OpenRouter', needsKey: true },
+  { id: 'zhipu', label: 'Zhipu', needsKey: true },
+  { id: 'dashscope', label: 'DashScope (Qwen)', needsKey: true },
+  { id: 'custom', label: 'Custom (OpenAI-compatible)', needsKey: true, needsBaseUrl: true },
+  { id: 'ollama', label: 'Ollama (local)', needsKey: false, needsBaseUrl: true },
+  { id: 'vllm', label: 'vLLM (local)', needsKey: false, needsBaseUrl: true },
+];
 
 // A few real, documented Anthropic-API-compatible providers, to fill the form in one click --
 // the same values their own Claude Code integration docs give, not guessed.

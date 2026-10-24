@@ -1478,3 +1478,31 @@ button { cursor: pointer; }
   from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: none; }
 }
+
+/* ---------------------------------------------------------------- settings sections */
+/* A second credential on the same card needs a visible wall between it and the first. These two
+   keys do different things to different tools, and the cost of confusing them is real: the one
+   above becomes ANTHROPIC_AUTH_TOKEN and quietly takes Claude Code off a working subscription. */
+.settings-section {
+  margin-top: 6px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.settings-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.settings-section-head h3 { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: -0.01em; }
+.settings-ready { font-size: 11px; color: var(--live); }
+.settings-notready { font-size: 11px; color: var(--text-faint); }
+.settings-field select {
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.settings-field select:focus { border-color: var(--accent); outline: none; }
+.settings-field select option { background: var(--bg-elevated); color: var(--text); }

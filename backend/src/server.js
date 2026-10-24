@@ -23,7 +23,8 @@ import { listUsers, createUser, setUserQuota, reconcileOsUsers, isFirstBoot } fr
 import { listProjects, createProject, projectPath } from './projects.js';
 import { listDir, readFile } from './files.js';
 import { attachTerminal, liveSessionNames, busySessionNames, killTerminal, wakeSession } from './pty.js';
-import { readSettingsForClient, writeSettings, clearAuthToken, PRESETS } from './settings.js';
+import { readSettingsForClient, writeSettings, clearSecret, PRESETS, DEEPCODE_PROVIDERS } from './settings.js';
+import { writeDeepcodeConfig, deepcodeConfigured } from './deepcode.js';
 import { duBytes, PLATFORM_QUOTA_BYTES, GB } from './diskUsage.js';
 import { listAgents, getAgent } from './agents.js';
 import { readProjectConfig, writeProjectConfig } from './projectConfig.js';
@@ -629,15 +630,36 @@ app.get('/api/usage', (req, res) => {
   });
 });
 
-app.get('/api/settings', (req, res) => res.json({ settings: readSettingsForClient(req.user), presets: PRESETS }));
+app.get('/api/settings', (req, res) =>
+  res.json({
+    settings: readSettingsForClient(req.user),
+    presets: PRESETS,
+    deepcodeProviders: DEEPCODE_PROVIDERS,
+    // Whether DeepCode would actually start. The settings page can then say so plainly instead of
+    // leaving the answer to be discovered as a wall of debug output in a terminal.
+    deepcodeConfigured: deepcodeConfigured(req.user),
+  })
+);
 app.put('/api/settings', (req, res) => {
   try {
-    res.json({ settings: writeSettings(req.user, req.body || {}) });
+    const settings = writeSettings(req.user, req.body || {});
+    // DeepCode reads a file, not this store, so saving has to reach the file too -- otherwise the
+    // settings page would show a provider that DeepCode itself has never heard of.
+    writeDeepcodeConfig(req.user);
+    res.json({ settings, deepcodeConfigured: deepcodeConfigured(req.user) });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
-app.delete('/api/settings/token', (req, res) => res.json({ settings: clearAuthToken(req.user) }));
+// One route, named by which secret it clears. The two are not interchangeable: clearing Claude's
+// token hands Claude Code back to its subscription login, clearing DeepCode's stops DeepCode.
+app.delete('/api/settings/secret/:field', (req, res) => {
+  try {
+    res.json({ settings: clearSecret(req.user, req.params.field) });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
 
 // Admin-only: the only way any account other than the bootstrap admin ever gets created --
 // invite-only by design, see auth.js's own comment on bootstrapAdmin. includeUsage runs a real

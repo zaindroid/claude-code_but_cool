@@ -60,16 +60,12 @@ export const AGENTS = {
     checkCmd: 'deepcode --version',
     installCmd: 'pip install deepcode-hku',
     preinstalled: false,
-    // DeepCode refuses to start until `~/.deepcode/deepcode_config.json` exists, and its own
-    // message for that state is twelve lines of debug logging and two paths -- which is what a
-    // Codez agent handed its user the first time one was made. `deepcode init` is the step that
-    // message asks for, so Codez takes it, once, only when the file is genuinely missing. It is
-    // still a command you can read in your own scrollback and could have typed yourself.
-    //
-    // It does NOT make DeepCode work: the config it writes has no provider key in it, and
-    // DeepCode has no account login to fall back on the way Claude Code does. A key is the one
-    // part of this only the account holder can supply.
-    launch: () => '[ -f ~/.deepcode/deepcode_config.json ] || deepcode init; deepcode',
+    // Plainly. An earlier version prefixed this with `deepcode init`, on the strength of
+    // DeepCode's own "not configured" message telling you to run it -- but in this container that
+    // command fails: init copies an existing config and the pip package ships no
+    // `deepcode_config.json.example` to copy from. Codez writes the config itself now, from the
+    // account's settings, which is also the only way the provider key gets in. See deepcode.js.
+    launch: () => 'deepcode',
     loginCmd: 'deepcode provider set',
     loginHint: 'DeepCode has no account login — it reads a provider API key set with its own `deepcode provider set` command.',
     resumeCmd: null, // DeepCode's resume is an in-session `/resume`, not a launch flag.

@@ -96,14 +96,10 @@ check(
   launchCommand(oc, { resume: true, fork: true })
 );
 check('codex launches plainly', launchCommand({ ...oc, agent: 'codex' }, { resume: true }) === 'codex');
-// DeepCode is the one agent Codez prepares before launching, because it refuses to start at all
-// until its own config file exists and says so in twelve lines of debug output. The guard matters
-// as much as the init: running `deepcode init` unconditionally would reset a config the account
-// has already put a provider key into.
-const dcLaunch = launchCommand({ ...oc, agent: 'deepcode' }, { resume: true });
-check('deepcode still ends by launching deepcode', dcLaunch.endsWith('; deepcode'), dcLaunch);
-check('deepcode inits when its config is missing', dcLaunch.includes('deepcode init'), dcLaunch);
-check('deepcode does not init over an existing config', dcLaunch.includes('[ -f ~/.deepcode/deepcode_config.json ] ||'), dcLaunch);
+// DeepCode launches plainly. Its config is written by Codez from the account's settings
+// (deepcode.js) rather than prepared on the command line -- `deepcode init` cannot do it in this
+// container, and the provider key has to come from the encrypted store either way.
+check('deepcode launches plainly', launchCommand({ ...oc, agent: 'deepcode' }, { resume: true }) === 'deepcode');
 
 // --- per-agent folders -----------------------------------------------------------------------
 // Each agent works in its own directory inside the project, so a crew does not share one tree.

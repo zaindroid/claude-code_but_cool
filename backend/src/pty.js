@@ -16,7 +16,7 @@ import pty from 'node-pty';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { projectPath } from './projects.js';
 import { listSessions, sessionDir } from './sessions.js';
-import { providerEnv } from './settings.js';
+import { providerEnv, deepcodeEnv } from './settings.js';
 
 // A full path, not a bare command name: `su -s` doesn't do a $PATH lookup the way exec-by-name
 // normally does, and $SHELL isn't set in this container to begin with -- live-caught 2026-09-23
@@ -180,6 +180,10 @@ function ensureTerminal(user, { project, session, sessionId, cols, rows }) {
       // session itself, so a skill or hook can identify its own crew name without being told.
       ...(session ? { CODEZ_SESSION: session, CODEZ_PROJECT: project } : {}),
       ...providerEnv(user),
+      // DeepCode's key, which its config refers to as ${DEEPCODE_API_KEY} rather than holding
+      // (deepcode.js). Separate from the block above on purpose: nothing here may end up in an
+      // ANTHROPIC_* variable, because that is what takes Claude Code off its subscription login.
+      ...deepcodeEnv(user),
     },
   });
 

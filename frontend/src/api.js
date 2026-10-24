@@ -20,7 +20,10 @@ export const readFile = (project, path) => call(`/api/file?project=${encodeURICo
 
 export const getSettings = () => call('/api/settings');
 export const saveSettings = (patch) => call('/api/settings', { method: 'PUT', body: JSON.stringify(patch) });
-export const clearAuthToken = () => call('/api/settings/token', { method: 'DELETE' });
+// Named by which secret it clears. Claude's token and DeepCode's key are separate on purpose:
+// clearing the first hands Claude Code back to its subscription login, clearing the second stops
+// DeepCode. One route, one explicit argument, so neither can be done by accident.
+export const clearSecret = (field) => call(`/api/settings/secret/${encodeURIComponent(field)}`, { method: 'DELETE' });
 
 export const listUsers = () => call('/api/admin/users');
 export const createUserAccount = (username, password) => call('/api/admin/users', { method: 'POST', body: JSON.stringify({ username, password }) });
