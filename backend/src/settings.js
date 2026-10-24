@@ -176,8 +176,46 @@ export function deepcodeEnv(user) {
 // Only two are filled in, and the rest are blank rather than guessed -- a wrong model id fails in
 // exactly the way above: at the first request, with nothing pointing back at this setting. The
 // settings page asks for one instead of inventing it.
+//
+// `reasoningEffort` and `maxTokens` below are not tuning. DeepSeek serves both of its models with
+// thinking ON by default, and then requires the `reasoning_content` it produced to be echoed back
+// on the next turn -- which DeepCode's runner only does when an effort level is configured
+// (providers/model_compat.py: `inject_empty_reasoning_content` is gated on
+// `reasoning_effort is not None`). Left unset, every DeepCode conversation dies on its second
+// request:
+//
+//   The `reasoning_content` in the thinking mode must be passed back to the API
+//
+// Setting the effort to `minimal` makes DeepCode send `thinking: {type: disabled}` in extra_body,
+// which turns thinking off at the API and takes the echo requirement with it. Measured against
+// api.deepseek.com with the account's own key rather than reasoned about: plain `deepseek-v4-pro`
+// and plain `deepseek-flash` both come back with a populated `reasoning_content` and
+// `reasoning_tokens` in usage; both come back with it absent once `thinking: {type: disabled}` is
+// sent. So switching model would not have helped -- it is the whole provider, not one model.
+//
+// maxTokens is the same failure one step earlier. DeepCode's default is 8192 for the whole
+// completion, reasoning included, which is how a tool call got cut off mid-argument:
+//
+//   Ignoring tool calls under finish_reason='length'
+//
+// ...followed by raw `<|DSML|>tool_calls` markup printed into the transcript, because a truncated
+// call never parses. 16384 was confirmed accepted for both models; with thinking off, all of it
+// goes to the answer.
+//
+// Only DeepSeek carries these. They are provider-level switches in DeepCode -- `thinking_style` is
+// declared by exactly two specs there, deepseek and dashscope -- and `reasoning_effort` goes on the
+// wire for whatever provider is set, where OpenAI rejects it outside its reasoning models. One
+// measured provider is worth more here than a table of plausible ones.
 export const DEEPCODE_PROVIDERS = [
-  { id: 'deepseek', label: 'DeepSeek', needsKey: true, defaultModel: 'deepseek-v4-pro', knownModels: 'deepseek-v4-pro (stronger) or deepseek-flash (cheaper)' },
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    needsKey: true,
+    defaultModel: 'deepseek-v4-pro',
+    knownModels: 'deepseek-v4-pro (stronger) or deepseek-flash (cheaper)',
+    reasoningEffort: 'minimal',
+    maxTokens: 16384,
+  },
   { id: 'openai', label: 'OpenAI', needsKey: true, defaultModel: 'gpt-4o-mini' },
   { id: 'anthropic', label: 'Anthropic', needsKey: true, defaultModel: '' },
   { id: 'gemini', label: 'Google Gemini', needsKey: true, defaultModel: '' },

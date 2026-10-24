@@ -59,6 +59,12 @@ export function writeDeepcodeConfig(user) {
   const model = s.deepcodeModel || spec.defaultModel;
   if (model) defaults.model = model;
 
+  // Whatever the provider needs on top of a model name to answer a second request at all. See the
+  // comment over DEEPCODE_PROVIDERS: for DeepSeek this is what turns thinking off, and without it
+  // every conversation ends on turn two no matter which model is named.
+  if (spec.reasoningEffort) defaults.reasoningEffort = spec.reasoningEffort;
+  if (spec.maxTokens) defaults.maxTokens = spec.maxTokens;
+
   const config = { providers: { [spec.id]: provider }, agents: { defaults } };
   const file = configPath(user);
   fs.mkdirSync(path.dirname(file), { recursive: true });
