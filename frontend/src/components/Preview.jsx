@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 // Where an agent's work becomes something you can look at.
 //
@@ -18,7 +18,6 @@ export default function Preview({ project, ports = [] }) {
   const [chosen, setChosen] = useState(null);
   const [manual, setManual] = useState('');
   const [nonce, setNonce] = useState(0);
-  const frameRef = useRef(null);
 
   // A port that goes away takes its preview with it, rather than leaving a frame pointed at
   // nothing and an address bar that lies about what is running.
@@ -46,7 +45,7 @@ export default function Preview({ project, ports = [] }) {
             </a>
           </div>
         </div>
-        <iframe key={nonce} ref={frameRef} className="preview-frame" title={`Preview of port ${chosen}`} src={src} />
+        <iframe key={nonce} className="preview-frame" title={`Preview of port ${chosen}`} src={src} />
       </div>
     );
   }
