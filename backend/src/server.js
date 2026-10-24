@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 
-import { login, logout, authStatus, requireAuth, requireAdmin, requireAuthOrToken, bootstrapAdmin, recoveryArmed, userFromCookieHeader } from './auth.js';
+import { login, logout, authStatus, requireAuth, requireAdmin, requireAuthOrToken, bootstrapAdmin, recoveryState, userFromCookieHeader } from './auth.js';
 import { createToken, listTokens, revokeToken } from './tokens.js';
 import {
   receiveSession,
@@ -245,7 +245,7 @@ app.get('/version', (req, res) =>
     sha: process.env.APP_SHA || process.env.SOURCE_COMMIT || 'unknown',
     built: process.env.APP_BUILT || 'unknown',
     firstBoot: isFirstBoot(),
-    recoveryArmed: recoveryArmed(),
+    recovery: recoveryState(),
   })
 );
 app.get('/openapi.json', (req, res) =>

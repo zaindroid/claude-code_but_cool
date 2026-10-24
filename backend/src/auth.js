@@ -67,7 +67,7 @@ export function bootstrapAdmin() {
     console.log(`Created the first account: ${username}`);
     return;
   }
-  applyPasswordReset(username);
+  applyPasswordReset();
 }
 
 // The way back in when the admin password is lost.
@@ -83,21 +83,40 @@ export function bootstrapAdmin() {
 // cannot strand the account in a state nobody holds the password for -- which is the exact
 // situation this exists to end. Unset it once you are back in; it is plaintext in the environment
 // for as long as it stays.
-function applyPasswordReset(username) {
+// Which account the reset opens onto. Its own variable, falling back to a fixed name rather than
+// to ADMIN_USERNAME.
+//
+// Deferring to ADMIN_USERNAME was the mistake that cost two deploys here. The reset went to the
+// account that variable named -- passed once at first boot, recorded nowhere -- so it worked
+// perfectly and still let nobody in: the right password under a name the operator could not guess.
+// A recovery hatch has to open onto a door you can name before you need it.
+function resetTarget() {
+  return process.env.ADMIN_RESET_USERNAME || 'admin';
+}
+
+// What the last boot's reset actually did. Kept because the alternative is a log line, and this
+// platform hands back only the final line of the log -- so a reset that quietly went somewhere
+// else read exactly like one that worked. That is what made those two deploys hard to tell apart.
+let lastOutcome = 'not armed';
+
+function applyPasswordReset() {
   const hash = process.env.ADMIN_PASSWORD_RESET_HASH;
   const password = process.env.ADMIN_PASSWORD_RESET;
   if (!hash && !password) return;
   const variable = hash ? 'ADMIN_PASSWORD_RESET_HASH' : 'ADMIN_PASSWORD_RESET';
+  const username = resetTarget();
 
   // Checked before anything is created, so a typo cannot leave a half-made admin account behind
   // whose password nobody knows.
   if (hash && !isStoredHash(hash)) {
+    lastOutcome = `rejected: ${variable} is not a stored password hash`;
     console.error(`${variable} is not a stored password hash (expected 32 hex characters of salt, a colon, 128 hex characters) -- nothing was changed`);
     return;
   }
 
   try {
     let admin = findByUsername(username);
+    const existed = Boolean(admin);
     if (!admin) {
       // Created, not just reset, and deliberately. A hatch that only opens when ADMIN_USERNAME
       // still matches whatever was passed at first boot is a hatch that fails on the one day it
@@ -113,18 +132,27 @@ function applyPasswordReset(username) {
     }
     if (hash) setPasswordHash(admin.id, hash);
     else setPassword(admin.id, password);
+    lastOutcome = existed ? 'reset an existing account' : 'created the account';
   } catch (err) {
     // Shouted, not thrown. Refusing to boot over a bad recovery variable would turn a typo into
     // the outage this hatch exists to prevent, and the existing password still works.
+    lastOutcome = `rejected: ${err.message}`;
     console.error(`Password reset rejected: ${err.message} -- nothing was changed`);
     return;
   }
   console.log(`${username} can sign in with the password from ${variable} -- unset that variable now`);
 }
 
-// Whether a reset is currently armed. Reported by /version so an operator can tell, from outside,
-// that the deployment has actually picked up the variable they set -- the question that is
-// otherwise unanswerable when the platform only surfaces the last line of the log.
+// Reported by /version so someone locked out of a deployment can see, from outside, whether the
+// variable they set was picked up, which account name it went to, and what came of it -- three
+// questions that are otherwise unanswerable when the platform surfaces only the last log line, and
+// that between them would have made this a one-deploy fix instead of a three-deploy one. The name
+// is one the operator chose, and none of it is usable without the password.
+export function recoveryState() {
+  return { armed: recoveryArmed(), target: resetTarget(), outcome: lastOutcome };
+}
+
+// Whether a reset is currently armed.
 export function recoveryArmed() {
   return Boolean(process.env.ADMIN_PASSWORD_RESET_HASH || process.env.ADMIN_PASSWORD_RESET);
 }

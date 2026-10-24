@@ -62,7 +62,7 @@ There is no change-password route either. Recovery goes through the environment 
 available to whoever controls the deployment and to nobody else.
 
 Hash the new password on your own machine, so it never travels through an env var or a deploy
-API`s request body:
+API's request body:
 
 ```bash
 node backend/tool/hashPassword.mjs < password.txt   # prints salt:hash
@@ -71,6 +71,20 @@ node backend/tool/hashPassword.mjs < password.txt   # prints salt:hash
 Set that output as `ADMIN_PASSWORD_RESET_HASH` on the app, restart, sign in, then unset it. The
 account keeps its id, role, quota and Linux user, and nothing on the data volume is touched --
 projects, sessions and histories all survive.
+
+It goes to the account named by `ADMIN_RESET_USERNAME`, or to `admin` if that is unset, creating
+that admin if no account holds the name. Accounts that already exist, including an admin under some
+other name, are left alone.
+
+Note what it deliberately does *not* read: `ADMIN_USERNAME`. An earlier version did, and that made
+the hatch useless in the one situation it is for -- that variable is set once at first boot and
+recorded nowhere, so the reset succeeded against a name the operator could no longer guess, and
+reported success while letting nobody in. The target has to be nameable before you need it.
+
+`GET /version` reports `sha`, `firstBoot` and `recovery: {armed, target, outcome}`, unauthenticated,
+because the moment you need those answers is the moment you cannot authenticate. It is how you
+confirm from outside that a restart picked the variable up and what came of it -- worth having
+where the host returns only the last line of the container log.
 
 `ADMIN_PASSWORD_RESET` takes a plain password instead, for an operator who already has a shell and
 would rather just type one. When both are set the hash wins.

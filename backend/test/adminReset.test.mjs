@@ -18,7 +18,7 @@ process.env.ADMIN_USERNAME = 'admin';
 
 const src = (f) => pathToFileURL(path.resolve("backend/src/" + f)).href;
 const users = await import(src('users.js'));
-const { bootstrapAdmin } = await import(src('auth.js'));
+const { bootstrapAdmin, recoveryState } = await import(src('auth.js'));
 
 let p = 0, f = 0;
 const ck = (l, c) => (c ? (p++, console.log('PASS  ' + l)) : (f++, console.log('FAIL  ' + l)));
@@ -98,7 +98,7 @@ ck('a boot with neither variable set is a no-op', !!users.verifyLogin('admin', '
 // point of asserting it anyway is that it must fail without taking the boot down and without
 // disturbing the account that already works. The successful-creation half only exists on Linux,
 // where this suite could not make a real system user either.
-process.env.ADMIN_USERNAME = 'nobody';
+process.env.ADMIN_RESET_USERNAME = 'nobody';
 process.env.ADMIN_PASSWORD_RESET_HASH = users.hashPassword('shouldnotapply');
 let boom = false;
 try { bootstrapAdmin(); } catch { boom = true; }
@@ -107,10 +107,30 @@ ck('the account that already worked still works either way', !!users.verifyLogin
 
 // Validation happens before creation, so a typo cannot leave behind a half-made admin whose
 // password nobody knows.
-process.env.ADMIN_USERNAME = 'typocase';
+process.env.ADMIN_RESET_USERNAME = 'typocase';
 process.env.ADMIN_PASSWORD_RESET_HASH = 'not-a-hash';
 bootstrapAdmin();
 ck('a malformed hash creates no account at all', users.findByUsername('typocase') === null);
+
+// The regression this suite exists for. The reset used to take its target from ADMIN_USERNAME,
+// which on a real deployment was set once at first boot and written down nowhere -- so it reset the
+// right password under a name nobody could guess, logged success, and let no one in. It must use
+// its own variable, and default to a name chosen in advance when that is unset.
+delete process.env.ADMIN_RESET_USERNAME;
+process.env.ADMIN_USERNAME = 'anamenobodyremembers';
+process.env.ADMIN_PASSWORD_RESET_HASH = users.hashPassword('fixeddefault999');
+bootstrapAdmin();
+ck('the reset ignores ADMIN_USERNAME', !!users.verifyLogin('admin', 'fixeddefault999'));
+ck('and did not touch any account under that name', users.findByUsername('anamenobodyremembers') === null);
+
+// And it has to say where it went, because a log line is not retrievable on the host this runs on.
+const state = recoveryState();
+ck('reports the account it targeted', state.target === 'admin');
+ck('reports that it was armed', state.armed === true);
+ck('reports what it did', state.outcome === 'reset an existing account');
+
+delete process.env.ADMIN_PASSWORD_RESET_HASH;
+ck('reports not-armed once the variable is gone', recoveryState().armed === false);
 
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(`
