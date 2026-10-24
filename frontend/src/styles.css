@@ -355,7 +355,7 @@ button { cursor: pointer; }
    where each fact lives and stops re-reading the whole line to find one of them. */
 .status {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 16px;
   padding: 0 4px;
@@ -369,6 +369,36 @@ button { cursor: pointer; }
 .status-agent { color: var(--text-faint); font-size: 10.5px; letter-spacing: 0.02em; flex: 0 0 auto; }
 .status-state { display: inline-flex; align-items: center; gap: 6px; }
 .status-live { color: var(--live); }
+/* The screen switcher. Words, not tabs: it changes what one panel shows, and anything with a
+   border here would read as a second navigation competing with the deck's. The live count is the
+   whole reason it earns a place -- a number appearing beside `preview` is the app telling you an
+   agent just started something, which no amount of chrome could say as quietly. */
+.status-views { display: inline-flex; align-items: center; gap: 2px; }
+.status-view {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.status-view:hover { color: var(--text-muted); background: var(--panel); }
+.status-view.is-on { color: var(--text); background: var(--accent-soft); }
+/* The one place a count means "something is alive", so it wears the colour that means exactly
+   that everywhere else in this app. */
+.status-view-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--live);
+  font-weight: 600;
+}
+
 .status-hint { border: none; background: transparent; color: var(--text-faint); font: inherit; padding: 0; }
 .status-hint:hover { color: var(--accent); }
 
@@ -720,35 +750,120 @@ button { cursor: pointer; }
 
 /* ---------------------------------------------------------------- preview */
 
-.preview-empty { height: 100%; display: flex; align-items: center; justify-content: center; padding: 0 24px; }
-.preview-form { text-align: center; max-width: 340px; }
-.preview-form p { color: var(--text-muted); font-size: 13.5px; margin: 0 0 14px; }
-.preview-form-row { display: flex; gap: 8px; }
-.preview-form-row input {
-  flex: 1;
-  padding: 9px 12px;
+/* ---------------------------------------------------------------- preview */
+/* The list of what is running. Addresses, set like addresses -- the port is the thing you are
+   choosing between, so it is the thing that is large, and the command holding it is the line
+   underneath that tells two node servers apart. */
+.preview-pick { height: 100%; display: flex; align-items: center; justify-content: center; padding: 24px; overflow: auto; }
+.preview-pick-inner { width: 100%; max-width: 44ch; }
+.preview-pick h2 {
+  margin: 0 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-muted);
+}
+.preview-ports { list-style: none; margin: 0 0 18px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.preview-ports button {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  border: 1px solid var(--border-strong);
   background: var(--panel);
   color: var(--text);
-  font-size: 13.5px;
-  outline: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
-.preview-form-row input:focus { border-color: var(--accent); }
-.preview-form-row button {
-  padding: 9px 16px;
-  border: none;
+.preview-ports button:hover { border-color: var(--accent); background: var(--panel-hover); }
+.preview-port-num { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; flex: 0 0 auto; }
+.preview-port-cmd {
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-none { margin: 0 0 18px; font-size: 12.5px; line-height: 1.7; color: var(--text-muted); }
+.preview-none code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  background: var(--panel);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--text);
+}
+
+.preview-manual { display: flex; gap: 8px; }
+.preview-manual input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: var(--accent);
-  color: #fff;
-  font-weight: 600;
-  font-size: 13.5px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
 }
-.preview-form-row button:disabled { opacity: 0.5; }
+.preview-manual input:focus { border-color: var(--accent); outline: none; }
+.preview-manual button {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.preview-manual button:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+.preview-manual button:disabled { opacity: 0.4; cursor: default; }
 
 .preview-frame-wrap { height: 100%; display: flex; flex-direction: column; }
-.preview-bar { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--text-muted); font-family: var(--font-mono); }
-.mail-link-btn { border: none; background: transparent; color: var(--accent); font-size: 12.5px; padding: 0; }
+.preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+.preview-back {
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  padding: 0 4px;
+  cursor: pointer;
+}
+.preview-back:hover { color: var(--accent); }
+.preview-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preview-bar-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.preview-bar-actions button,
+.preview-bar-actions a {
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.preview-bar-actions button:hover,
+.preview-bar-actions a:hover { color: var(--text); background: var(--panel); }
+/* White, always: this frame holds somebody else's page, which has its own idea of a background
+   and will look broken showing through to ours. */
 .preview-frame { flex: 1; border: none; width: 100%; background: #fff; }
 
 /* ---------------------------------------------------------------- new project / project tools */

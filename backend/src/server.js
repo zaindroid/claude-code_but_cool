@@ -32,6 +32,7 @@ import { listSkills, createSkill, deleteSkill } from './skills.js';
 import { listLessons, createLesson, deleteLesson, injectLessonsIntoProject, promoteLessonToSkill } from './lessons.js';
 import { listTemplates, saveProjectAsTemplate } from './templates.js';
 import { getUsageForProjects } from './tokenUsage.js';
+import { listOwnPorts, isOwnPort } from './ports.js';
 import {
   listAllSessions,
   listSessions,
@@ -608,6 +609,17 @@ app.get('/api/file', (req, res) => {
 
 // Everyone can see their own usage against their own quota, plus the platform-wide total (not
 // other accounts' individual usage -- that's the admin panel's job, see /api/admin/users below).
+// What this account has listening right now. The preview panel polls it, which is how an agent
+// that just ran `npm run dev` ends up offering its result in the UI without anyone being told the
+// port -- see ports.js for why this is a reading rather than a guess.
+app.get('/api/ports', (req, res) => {
+  try {
+    res.json({ ports: listOwnPorts(req.user) });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 app.get('/api/usage', (req, res) => {
   res.json({
     usedBytes: duBytes(req.user.homeDir),
@@ -652,22 +664,66 @@ app.patch('/api/admin/users/:id/quota', requireAdmin, (req, res) => {
   }
 });
 
-// A dev server the person starts inside their project's terminal (npm run dev, etc) shows up
-// here once they tell Codez which port it's on -- kept as a plain per-request header rather than
-// server-side state, since the only thing that needs to know is this one proxy call itself.
-app.use('/preview/:project', requireAuth, (req, res, next) => {
-  const port = Number(req.headers['x-codez-preview-port']) || Number(req.query.port);
+// A dev server an agent starts in its own terminal, shown inside Codez.
+//
+// The port is in the *path* now, and that is the whole fix. It used to ride in `?port=`, which the
+// first request carries and nothing after it does: the browser resolves the page's own
+// `<script src="app.js">` against the directory it was served from, with no query string, so
+// every stylesheet, script and image after the opening document came back 400. The preview
+// appeared to work and then showed a blank page, which is as good as not existing -- and is why
+// this looked like a missing feature rather than a broken one. A prefix is inherited by relative
+// URLs for free.
+//
+// The port must be one this account is itself listening on. Accounts share a container and
+// therefore share 127.0.0.1, so without that check "preview port 3000" means "preview whoever
+// got to 3000 first" -- someone else's dev server, proxied through your own authenticated
+// session. See ports.js.
+function proxyToOwnPort(req, res, next, { port, stripPrefix }) {
   if (!port || port < 1 || port > 65535) return res.status(400).json({ error: 'Missing or invalid preview port' });
-  createProxyMiddleware({
+  if (!isOwnPort(req.user, port))
+    return res.status(404).json({ error: `Nothing of yours is listening on port ${port}` });
+  return createProxyMiddleware({
     target: `http://127.0.0.1:${port}`,
     changeOrigin: true,
     ws: true,
-    pathRewrite: { [`^/preview/${req.params.project}`]: '' },
+    ...(stripPrefix ? { pathRewrite: { [`^${stripPrefix}`]: '' } } : {}),
   })(req, res, next);
-});
+}
+
+app.use('/preview/:project/:port', requireAuth, (req, res, next) =>
+  proxyToOwnPort(req, res, next, {
+    port: Number(req.params.port),
+    stripPrefix: `/preview/${req.params.project}/${req.params.port}`,
+  })
+);
+
+// What a page asks for from the site root rather than from its own directory: Vite's `/@vite/client`
+// and `/src/main.jsx`, a built bundle's `/assets/*`, a favicon. A path prefix cannot catch those --
+// they leave the prefix by construction -- so they are recognised by where they were asked from.
+// The referer is a preview URL this same session was just served, and it only ever selects among
+// ports this account already owns, so it widens nothing: it is the same gate, asked about the page
+// that is doing the asking.
+function previewRefererPort(req) {
+  const ref = req.headers.referer || req.headers.referrer;
+  if (!ref) return null;
+  try {
+    const m = /^\/preview\/[^/]+\/(\d{1,5})(?:\/|$)/.exec(new URL(ref).pathname);
+    return m ? Number(m[1]) : null;
+  } catch {
+    return null; // a referer that is not a URL tells us nothing
+  }
+}
 
 const staticDir = path.resolve(__dirname, '..', 'public');
 app.use(express.static(staticDir));
+// Anything left: a preview's own root-absolute asset, or the single-page app.
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api') || req.path.startsWith('/preview')) return next();
+  const port = previewRefererPort(req);
+  if (!port) return next();
+  return requireAuth(req, res, () => proxyToOwnPort(req, res, next, { port }));
+});
+
 app.get('*', (req, res) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/preview')) return res.status(404).json({ error: 'Not found' });
   res.sendFile(path.join(staticDir, 'index.html'));

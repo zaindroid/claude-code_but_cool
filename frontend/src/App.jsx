@@ -23,6 +23,7 @@ import {
   createProject,
   listCrew,
   listAgents,
+  listPorts,
   wakeSession,
   deleteSession,
   quitSession,
@@ -90,6 +91,11 @@ export default function App() {
   // server, not the Dockerfile's intent). Fetched once: the answer changes only when the image
   // does, and the crew rail needs it to grey out an agent you cannot start.
   const [agents, setAgents] = useState([]);
+  // What this account has listening, straight from the kernel (backend/src/ports.js). Polled here
+  // rather than inside the preview panel so the status line can say an agent has produced
+  // something while you are still looking at the terminal -- which is the only moment the news is
+  // worth anything.
+  const [ports, setPorts] = useState([]);
   const sendersRef = useRef({});
   // Sessions waiting for their terminal to say its first word so the agent can be launched into
   // it. Held in a ref because the signal arrives from a websocket callback registered once, which
@@ -231,6 +237,21 @@ export default function App() {
   useEffect(() => {
     activeProjectRef.current = activeProject;
   }, [activeProject]);
+
+  // A dev server appearing is the one thing on this page that happens without anyone clicking,
+  // so it is worth asking about on a human cadence. Six seconds is fast enough that `npm run dev`
+  // feels like it announced itself and slow enough to be free.
+  useEffect(() => {
+    if (!authed) return undefined;
+    let cancelled = false;
+    const poll = () => listPorts().then((r) => !cancelled && setPorts(r.ports || [])).catch(() => {});
+    poll();
+    const id = setInterval(poll, 6000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [authed]);
 
   // Polled slowly and only while signed in: this reads transcript files on the server, so asking
   // more often than a person could notice would be pure cost for no information.
@@ -658,7 +679,7 @@ export default function App() {
                 <FileBrowser project={activeProject} />
               </div>
               <div className={`panel ${view === 'preview' ? '' : 'is-hidden'}`}>
-                <Preview project={activeProject} />
+                <Preview project={activeProject} ports={ports} />
               </div>
             </>
           ) : (
@@ -696,6 +717,39 @@ export default function App() {
                 <span className="status-tokens">usage not tracked for {(projectUsage.untracked || [projectUsage.agent]).join(', ')}</span>
               )}
             </span>
+            {/* Which of the three things the screen is showing. These were palette-only, which
+                is why the preview may as well not have existed: a feature you can only reach by
+                knowing its name is a feature for people who already know it is there. Three words
+                in the line that was already here costs no new region of chrome, and `preview`
+                carries a live count of what your agents have listening -- so the screen tells you
+                an agent produced something while you are still looking at the terminal. */}
+            {!focus && (
+              <span className="status-views" role="group" aria-label="Screen">
+                {[
+                  ['terminal', 'terminal', 0],
+                  ['files', 'files', 0],
+                  ['preview', 'preview', ports.length],
+                ].map(([id, label, count]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`status-view ${view === id ? 'is-on' : ''}`}
+                    aria-pressed={view === id}
+                    onClick={() => setView(id)}
+                    title={
+                      id === 'preview'
+                        ? count
+                          ? `${count} ${count === 1 ? 'server' : 'servers'} running — open the preview`
+                          : 'Nothing running yet — a dev server appears here on its own'
+                        : undefined
+                    }
+                  >
+                    {label}
+                    {count > 0 && <span className="status-view-count">{count}</span>}
+                  </button>
+                ))}
+              </span>
+            )}
             <button
               type="button"
               className="status-hint"

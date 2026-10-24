@@ -97,3 +97,7 @@ export const sessionLaunchCommand = (project, id, { fork = false } = {}) =>
 export const listMachineTokens = () => call('/api/tokens');
 export const createMachineToken = (label) => call('/api/tokens', { method: 'POST', body: JSON.stringify({ label }) });
 export const revokeMachineToken = (id) => call(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' });
+
+// Which ports this account's own processes are listening on. The preview panel's whole list, and
+// the dot in the status line that says an agent has something to show.
+export const listPorts = () => call('/api/ports');
