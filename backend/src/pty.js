@@ -107,6 +107,25 @@ function destroy(key, entry) {
   if (terminals.get(key) === entry) terminals.delete(key);
 }
 
+// Ends a named session's shell now, instead of waiting out SESSION_IDLE_GRACE_MS.
+//
+// That grace is six hours, which is right for "I closed the tab and want to come back to it" and
+// wrong for everything else: until this existed, stopping an agent was a thing you could want and
+// had no way to say. Closing the window armed a timer; it did not end anything.
+//
+// Viewers are told before the shell goes, so a tab that is still open shows an exit rather than
+// quietly going dead. destroy() disposes the onExit handler first, so this message is the only one
+// they get, not a duplicate.
+export function killTerminal(user, project, session) {
+  const key = terminalKey(user, { project, session });
+  const entry = terminals.get(key);
+  if (!entry) return { wasRunning: false };
+  if (entry.timeout) clearTimeout(entry.timeout);
+  for (const viewer of entry.viewers) send(viewer, { type: 'exit', exitCode: 0, reason: 'quit' });
+  destroy(key, entry);
+  return { wasRunning: true };
+}
+
 export function attachTerminal(ws, user, { project, session, sessionId, cols, rows }) {
   const projectDir = projectPath(user, project);
   if (!projectDir) {

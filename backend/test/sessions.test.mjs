@@ -141,6 +141,65 @@ check('deleting a session leaves its files alone', fs.existsSync(path.join(projA
 check('deletes', listSessions(user, 'alpha').length === 0);
 throws('deleting twice 404s', () => deleteSession(user, 'alpha', a.id), 404);
 
+// --- purge ---------------------------------------------------------------------------------
+// `deleteSession` with purge deletes what the session owned. These are the tests that matter most
+// in this file, because this is the only place in the app that removes a directory recursively.
+
+const p1 = createSession(user, 'alpha', { name: 'purgeme' });
+const p1dir = path.join(projAlpha, p1.dir);
+const p1transcript = transcriptPath(user, projAlpha, p1);
+fs.mkdirSync(path.dirname(p1transcript), { recursive: true });
+fs.writeFileSync(p1transcript, '{"ok":true}');
+fs.writeFileSync(path.join(p1dir, 'work.txt'), 'some work');
+
+const purged = deleteSession(user, 'alpha', p1.id, { purge: true });
+check('purge reports the folder it deleted', purged.folder === p1.dir, String(purged.folder));
+check('purge reports the transcript it deleted', purged.transcript === true);
+check('purge deleted the folder', !fs.existsSync(p1dir));
+check('purge deleted the transcript', !fs.existsSync(p1transcript));
+check('purge left the project itself alone', fs.existsSync(projAlpha));
+
+// The one that would be catastrophic. A session predating folder-per-agent has no `dir` and works
+// in the project root, so purging it must delete the transcript and nothing else -- deleting the
+// "session's folder" there would take the project and every other session in it.
+// Written straight into sessions.json, because `dir` is deliberately not in updateSession's
+// whitelist -- a session's folder is not something a request may re-point. These records have to
+// be forged to exist at all, which is itself a small reassurance.
+const sfile = path.join(projAlpha, '.codez', 'sessions.json');
+const forceDir = (name, dir) => {
+  const data = JSON.parse(fs.readFileSync(sfile, 'utf8'));
+  data.sessions = data.sessions.map((s) => (s.name === name ? { ...s, dir } : s));
+  fs.writeFileSync(sfile, JSON.stringify(data, null, 2));
+};
+
+createSession(user, 'alpha', { name: 'oldtimer' });
+forceDir('oldtimer', null);
+const legacyRecord = findSessionByName(user, 'oldtimer');
+fs.writeFileSync(path.join(projAlpha, 'precious.txt'), 'do not delete me');
+const legacyPurge = deleteSession(user, 'alpha', legacyRecord.id, { purge: true });
+check('purging a root-dir session reports no folder', legacyPurge.folder === null, String(legacyPurge.folder));
+check('purging a root-dir session does NOT delete the project', fs.existsSync(projAlpha));
+check('purging a root-dir session leaves the project files', fs.existsSync(path.join(projAlpha, 'precious.txt')));
+
+// A traversal in `dir` must not escape the project, however it got there.
+createSession(user, 'alpha', { name: 'escapee' });
+forceDir('escapee', path.join('..', 'beta'));
+const evilRecord = findSessionByName(user, 'escapee');
+const evilPurge = deleteSession(user, 'alpha', evilRecord.id, { purge: true });
+check('a traversal in dir is refused', evilPurge.folder === null, String(evilPurge.folder));
+check('the sibling project survives', fs.existsSync(path.join(user.projectsDir, 'beta')));
+
+// Without purge, nothing on disk moves -- the long-standing default.
+const keep = createSession(user, 'alpha', { name: 'keeper' });
+const keepDir = path.join(projAlpha, keep.dir);
+const keepTranscript = transcriptPath(user, projAlpha, keep);
+fs.mkdirSync(path.dirname(keepTranscript), { recursive: true });
+fs.writeFileSync(keepTranscript, '{"ok":true}');
+const kept = deleteSession(user, 'alpha', keep.id);
+check('a plain delete reports nothing purged', kept.folder === null && kept.transcript === false);
+check('a plain delete keeps the folder', fs.existsSync(keepDir));
+check('a plain delete keeps the transcript', fs.existsSync(keepTranscript));
+
 fs.rmSync(root, { recursive: true, force: true });
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

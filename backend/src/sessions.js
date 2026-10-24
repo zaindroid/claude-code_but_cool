@@ -245,18 +245,58 @@ export function updateSession(user, project, id, patch) {
   return { ...next, project };
 }
 
-// Removes Codez's record of a session. Does NOT delete the Claude Code transcript: that is the
-// real conversation, it lives under the account's own home, and deleting someone's actual history
-// as a side effect of tidying a sidebar would be a genuinely destructive surprise. A removed
-// session can be re-registered against the same uuid and resume exactly where it left off.
-export function deleteSession(user, project, id) {
+// Forgets a session, and with `purge` deletes what it owned.
+//
+// Without purge, this is what it always was: one row out of sessions.json. The Claude Code
+// transcript stays, because that is the real conversation, it lives under the account's own home,
+// and deleting someone's actual history as a side effect of tidying a sidebar would be a genuinely
+// destructive surprise -- the session can be re-registered against the same uuid and resume
+// exactly where it left off. That default is right, and it is still the default.
+//
+// What was wrong is that it was the *only* behaviour, behind a button labelled "Remove". The face
+// disappeared while the folder, the transcript and the running shell all carried on, so the label
+// promised something the code refused to do and there was no way to ask for the other thing. Now
+// the caller chooses, and the returned value names exactly what went, so it can say so rather than
+// guess.
+export function deleteSession(user, project, id, { purge = false } = {}) {
   const dir = projectPath(user, project);
   if (!dir) throw Object.assign(new Error('Unknown project'), { status: 404 });
   const current = readSessions(dir);
-  const sessions = current.sessions.filter((s) => s.id !== id);
-  if (sessions.length === current.sessions.length) throw Object.assign(new Error('Unknown session'), { status: 404 });
-  writeSessions(user, dir, { ...current, sessions });
-  return { ok: true };
+  const going = current.sessions.find((s) => s.id === id);
+  if (!going) throw Object.assign(new Error('Unknown session'), { status: 404 });
+  writeSessions(user, dir, { ...current, sessions: current.sessions.filter((s) => s.id !== id) });
+
+  const removed = { ok: true, name: going.name, folder: null, transcript: false };
+  if (!purge) return removed;
+
+  // Only ever a folder this session owns, and only one directory level down.
+  //
+  // A session from before folder-per-agent has no `dir` and works in the project root, so purging
+  // one must not touch the root: that would take the project and every other session in it, which
+  // is not what removing one agent means by any reading. The path check is belt and braces against
+  // a `dir` that ever manages to contain a traversal.
+  if (going.dir) {
+    const own = path.join(dir, going.dir);
+    if (path.dirname(own) === dir && own !== dir) {
+      try {
+        fs.rmSync(own, { recursive: true, force: true });
+        removed.folder = going.dir;
+      } catch {
+        // Left in place rather than reported as gone -- the caller is about to tell someone what
+        // was deleted, and a false yes there is worse than an honest no.
+      }
+    }
+  }
+
+  if (going.claudeSessionId) {
+    try {
+      fs.rmSync(transcriptPath(user, dir, going), { force: true });
+      removed.transcript = true;
+    } catch {
+      // Same reasoning: silence here means "still there", not "done".
+    }
+  }
+  return removed;
 }
 
 // Where this session actually works.

@@ -2,14 +2,21 @@ import { useEffect, useRef, useState } from 'react';
 import CrewAvatar from './CrewAvatar.jsx';
 import { createSession, updateSession } from '../api.js';
 
+
 // The crew, inline in the top strip. These faces are the app's only persistent navigation: click
 // one to put that agent on the screen.
 //
-// Everything you can *do* to a session -- wake, fork, remove, teleport -- lives in the command
-// palette instead of as buttons here. That is the point of the redesign rather than a shortcut:
-// six visible buttons that change meaning depending on which face is selected is exactly the kind
-// of chrome that makes a person re-read the interface every time they look at it. Faces show
-// state; one key does actions.
+// Most of what you can *do* to a session -- fork, teleport, switch -- lives in the command palette
+// instead of as buttons here. That is the point of the redesign rather than a shortcut: six
+// visible buttons that change meaning depending on which face is selected is exactly the kind of
+// chrome that makes a person re-read the interface every time they look at it. Faces show state;
+// one key does actions.
+//
+// Starting and stopping are the exception, and they earned it. A palette entry only helps someone
+// who already knows it is there, and "how do I stop this" is a question people ask with their eyes
+// -- it was asked here about a shell that had been running unattended with no way to end it. So
+// the selected session gets exactly one action button, which is Resume when nothing is running in
+// it and Stop when something is, plus a remove that says what it will take.
 //
 // A session is a real Claude Code session with a real name -- the same name another agent types
 // into SendMessage to reach it, and the same name that seeds its face. The shell behind it keeps
@@ -25,6 +32,8 @@ export default function CrewRail({
   onPage,
   onSelect,
   onResume,
+  onQuit,
+  onRemove,
   running,
   activity,
   awake,
@@ -36,6 +45,7 @@ export default function CrewRail({
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState('');
   const [draftAgent, setDraftAgent] = useState(defaultAgent);
+  const [removing, setRemoving] = useState(null);
   const [renaming, setRenaming] = useState(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [error, setError] = useState(null);
@@ -73,7 +83,7 @@ export default function CrewRail({
   // The selected session, when it has no agent running. `null` the rest of the time, which is what
   // hides the Resume button.
   const selected = sessions.find((s) => s.name === activeSession) || null;
-  const resumable = selected && !running?.has(selected.name) ? selected : null;
+  const isRunning = Boolean(selected && running?.has(selected.name));
 
   function agentLabel(id) {
     return agents.find((a) => a.id === (id || 'claude'))?.label || id || 'claude';
@@ -287,26 +297,91 @@ export default function CrewRail({
         </div>
       )}
 
-      {/* Resume, as a button rather than as a command you have to know.
-          Deliberately separate from the faces: clicking a face only switches to it, so there is
-          no way to start an agent by misclicking, and no way to be unsure which one you just
-          started -- it names the session. Shown only while the selected session has no agent
-          running, so it disappears the moment it has done its job rather than sitting there
-          inviting a second one. */}
-      {resumable && (
+      {/* One action for the selected session, never two. Deliberately separate from the faces:
+          clicking a face only switches to it, so there is no way to start or stop an agent by
+          misclicking, and the button names the session so there is no way to be unsure which one
+          you just acted on. Resume disappears the moment it has done its job rather than sitting
+          there inviting a second agent into the same shell; Stop takes its place. */}
+      {selected && !isRunning && (
         <button
           type="button"
           className="crew-resume"
-          onClick={() => onResume?.(resumable.name)}
+          onClick={() => onResume?.(selected.name)}
           title={
-            resumable.hasHistory
-              ? `Pick ${resumable.name} up where it stopped (${agentLabel(resumable.agent)} --resume)`
-              : `Start ${agentLabel(resumable.agent)} in ${resumable.name}`
+            selected.hasHistory
+              ? `Pick ${selected.name} up where it stopped (${agentLabel(selected.agent)} --resume)`
+              : `Start ${agentLabel(selected.agent)} in ${selected.name}`
           }
         >
           <span aria-hidden="true">▸</span>
-          {resumable.hasHistory ? 'Resume' : 'Start'} {resumable.name}
+          {selected.hasHistory ? 'Resume' : 'Start'} {selected.name}
         </button>
+      )}
+
+      {selected && isRunning && (
+        <button
+          type="button"
+          className="crew-stop"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await onQuit?.(selected);
+            } catch (err) {
+              setError(err.message || 'Could not stop it');
+            } finally {
+              setBusy(false);
+            }
+          }}
+          title={`End the shell running in ${selected.name}. Its conversation is kept -- Resume picks it up again.`}
+        >
+          <span aria-hidden="true">■</span>
+          Stop {selected.name}
+        </button>
+      )}
+
+      {/* Removal asks rather than confirms, because the two things people mean by it have very
+          different consequences and the old single "Remove" quietly did the harmless one while
+          being named like the other. Both are spelled out, and the destructive one says what it
+          will take by name. */}
+      {selected && !removing && (
+        <button type="button" className="crew-remove-open" onClick={() => setRemoving(selected)}>
+          Remove {selected.name}…
+        </button>
+      )}
+
+      {removing && (
+        <div className="crew-remove" role="group" aria-label={`Remove ${removing.name}`}>
+          <button
+            type="button"
+            onClick={async () => {
+              const going = removing;
+              setRemoving(null);
+              await onRemove?.(going, { purge: false });
+            }}
+          >
+            Forget the face
+            <span>Its conversation stays. Adding the name back picks it up again.</span>
+          </button>
+          <button
+            type="button"
+            className="crew-remove-hard"
+            onClick={async () => {
+              const going = removing;
+              setRemoving(null);
+              await onRemove?.(going, { purge: true });
+            }}
+          >
+            Delete everything
+            <span>
+              {removing.dir ? `Deletes its ${removing.dir}/ folder and its conversation. ` : 'Deletes its conversation. '}
+              Permanent.
+            </span>
+          </button>
+          <button type="button" className="crew-remove-cancel" onClick={() => setRemoving(null)}>
+            Keep it
+          </button>
+        </div>
       )}
 
       {error && (

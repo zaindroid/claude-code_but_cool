@@ -24,6 +24,7 @@ import {
   listAgents,
   sessionLaunchCommand,
   deleteSession,
+  quitSession,
   getTokenUsage,
 } from './api.js';
 
@@ -382,18 +383,36 @@ export default function App() {
     armWake(session.project || activeProject, session);
   }
 
+  // Ends the shell without touching the session. The rail asks for this on the selected agent; it
+  // is the counterpart to waking one, and until it existed a closed tab left a shell alive for the
+  // six hours of pty.js's idle grace with nothing able to end it sooner.
+  async function quitActive(session) {
+    await quitSession(session.project || activeProject, session.id);
+    setCrewVersion((v) => v + 1);
+  }
+
+  // Removal, with the choice made explicit by the caller rather than assumed here. `purge` deletes
+  // the session's own folder and its conversation; without it the history stays and the name can be
+  // added back to resume, which is what this always did under a label that implied otherwise.
+  async function removeSession(session, { purge = false } = {}) {
+    const project = session.project || activeProject;
+    await deleteSession(project, session.id, { purge });
+    if (session.name === activeSession) {
+      setActiveSessionByProject((prev) => ({ ...prev, [project]: null }));
+      openTerm(project, null);
+    }
+    setCrewVersion((v) => v + 1);
+  }
+
   async function removeActive() {
     if (!activeRecord) return;
     if (
       !window.confirm(
-        `Remove "${activeRecord.name}" from the crew?\n\nIts conversation history stays on disk — adding a session with this name again resumes it.`
+        `Remove "${activeRecord.name}" from the crew?\n\nIts conversation history stays on disk — adding a session with this name again resumes it.\n\nTo delete the history too, use Remove on the crew rail.`
       )
     )
       return;
-    await deleteSession(activeProject, activeRecord.id);
-    setActiveSessionByProject((prev) => ({ ...prev, [activeProject]: null }));
-    openTerm(activeProject, null);
-    setCrewVersion((v) => v + 1);
+    await removeSession(activeRecord, { purge: false });
   }
 
   async function handleLogout() {
@@ -425,6 +444,16 @@ export default function App() {
           hint: 'new id, same history',
           keywords: 'branch copy diverge',
           run: () => wake({ fork: true }),
+        });
+      // Offered only while something is actually running in it, so the palette never lists a stop
+      // for a session that is already stopped.
+      if (running?.has(activeRecord.name))
+        list.push({
+          id: 'quit',
+          label: `Stop ${activeRecord.name}`,
+          hint: 'ends the shell, keeps the history',
+          keywords: 'kill quit stop end terminate shut',
+          run: () => quitActive(activeRecord),
         });
     }
     list.push({ id: 'teleport', label: 'Teleport a session here', hint: 'from another machine', keywords: 'move sync import cli token', run: () => setTeleportOpen(true) });
@@ -479,11 +508,11 @@ export default function App() {
     list.push({ id: 'focus', label: focus ? 'Show the crew' : 'Focus mode', hint: 'hide everything but the screen', keywords: 'zen full distraction', run: () => setFocus((v) => !v) });
     list.push({ id: 'theme', label: theme === 'dark' ? 'Switch to light' : 'Switch to dark', keywords: 'appearance colour', run: () => setTheme((t) => (t === 'dark' ? 'light' : 'dark')) });
 
-    if (activeRecord) list.push({ id: 'remove', label: `Remove ${activeRecord.name}`, hint: 'keeps its history', keywords: 'delete crew', run: removeActive });
+    if (activeRecord) list.push({ id: 'remove', label: `Remove ${activeRecord.name}`, hint: 'forgets the face, keeps the history', keywords: 'delete crew', run: removeActive });
     list.push({ id: 'signout', label: 'Sign out', keywords: 'logout leave', run: handleLogout });
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeRecord, crewOfProject, activeSession, projects, activeProject, projectAgent, role, theme, focus, awake]);
+  }, [activeRecord, crewOfProject, activeSession, projects, activeProject, projectAgent, role, theme, focus, awake, running]);
 
   if (authed === null) return <div className="boot-screen" />;
   if (!authed)
@@ -539,6 +568,8 @@ export default function App() {
               awake={awake}
               running={running}
               onResume={resumeSession}
+              onQuit={quitActive}
+              onRemove={removeSession}
               onChanged={refreshCrew}
               agents={agents}
               defaultAgent={activePage}

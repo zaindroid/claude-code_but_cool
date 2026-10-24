@@ -22,7 +22,7 @@ import {
 import { listUsers, createUser, setUserQuota, reconcileOsUsers, isFirstBoot } from './users.js';
 import { listProjects, createProject, projectPath } from './projects.js';
 import { listDir, readFile } from './files.js';
-import { attachTerminal, liveSessionNames, busySessionNames } from './pty.js';
+import { attachTerminal, liveSessionNames, busySessionNames, killTerminal } from './pty.js';
 import { readSettingsForClient, writeSettings, clearAuthToken, PRESETS } from './settings.js';
 import { duBytes, PLATFORM_QUOTA_BYTES, GB } from './diskUsage.js';
 import { listAgents, getAgent } from './agents.js';
@@ -403,11 +403,29 @@ app.patch('/api/projects/:project/sessions/:id', (req, res) => {
   }
 });
 
+// Stops a session's shell now. Separate from removing it: "I am done working for today" and "this
+// agent should not exist" are different intentions, and conflating them is how you lose a
+// conversation you meant to keep.
+app.post('/api/projects/:project/sessions/:id/quit', (req, res) => {
+  const dir = requireProjectDir(req, res);
+  if (!dir) return;
+  const session = findSessionById(req.user, req.params.project, req.params.id);
+  if (!session) return res.status(404).json({ error: 'Unknown session' });
+  res.json(killTerminal(req.user, req.params.project, session.name));
+});
+
+// `?purge=1` deletes the session's own folder and its transcript as well. Without it, history
+// stays and the name can be added back to resume -- the long-standing default.
 app.delete('/api/projects/:project/sessions/:id', (req, res) => {
   const dir = requireProjectDir(req, res);
   if (!dir) return;
   try {
-    res.json(deleteSession(req.user, req.params.project, req.params.id));
+    const session = findSessionById(req.user, req.params.project, req.params.id);
+    // Killed before the record goes, since killTerminal resolves the shell by session *name* and
+    // there would be nothing left to look it up from afterwards. A shell left running against a
+    // folder that is about to be deleted is the one outcome worth ruling out here.
+    if (session) killTerminal(req.user, req.params.project, session.name);
+    res.json(deleteSession(req.user, req.params.project, req.params.id, { purge: req.query.purge === '1' }));
   } catch (err) {
     sendError(res, err);
   }

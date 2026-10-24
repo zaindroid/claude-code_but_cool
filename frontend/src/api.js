@@ -68,8 +68,13 @@ export const createSession = (project, name, agent) =>
   call(`/api/projects/${encodeURIComponent(project)}/sessions`, { method: 'POST', body: JSON.stringify({ name, agent }) });
 export const updateSession = (project, id, patch) =>
   call(`/api/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) });
-export const deleteSession = (project, id) =>
-  call(`/api/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+// Stops the shell, leaves the session. The counterpart to waking one.
+export const quitSession = (project, id) =>
+  call(`/api/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(id)}/quit`, { method: 'POST' });
+// `purge` also deletes the session's folder and transcript. Default false, so the old behaviour --
+// forget the face, keep the history -- is still what you get unless the caller says otherwise.
+export const deleteSession = (project, id, { purge = false } = {}) =>
+  call(`/api/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(id)}${purge ? '?purge=1' : ''}`, { method: 'DELETE' });
 // Asks the backend for the exact command to wake this session. The backend decides resume-vs-fresh
 // by looking at whether the transcript actually exists, which the frontend has no way to know and
 // must not guess -- `--session-id` on a uuid that already has history is a hard error, as is
