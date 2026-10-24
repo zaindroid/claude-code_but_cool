@@ -52,9 +52,12 @@ export function writeDeepcodeConfig(user) {
   if (s.deepcodeBaseUrl) provider.apiBase = s.deepcodeBaseUrl;
 
   const defaults = { provider: spec.id };
-  // Left out unless asked for: with no model named, DeepCode falls back to its own default for
-  // each phase, which is a better answer than one model this app picked for every phase.
-  if (s.deepcodeModel) defaults.model = s.deepcodeModel;
+  // A model always goes in when one is known. "Leave it out and DeepCode picks a sensible default"
+  // was the reasoning here, and it was wrong: DeepCode's fallback is one global `openai/gpt-4o-mini`
+  // regardless of provider, so leaving it blank pointed DeepSeek at an OpenAI model name and would
+  // have failed on the first request rather than at the setting. See DEEPCODE_PROVIDERS.
+  const model = s.deepcodeModel || spec.defaultModel;
+  if (model) defaults.model = model;
 
   const config = { providers: { [spec.id]: provider }, agents: { defaults } };
   const file = configPath(user);
@@ -62,5 +65,5 @@ export function writeDeepcodeConfig(user) {
   chownToUser(path.dirname(file), user.uid, user.gid);
   fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
   chownToUser(file, user.uid, user.gid);
-  return { written: true, provider: spec.id };
+  return { written: true, provider: spec.id, model: model || null };
 }

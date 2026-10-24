@@ -778,7 +778,20 @@ export default function App() {
       </div>
 
       {paletteOpen && <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} />}
-      {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <Settings
+          onClose={() => setSettingsOpen(false)}
+          agents={agents}
+          loginCmd={LOGIN_CMD}
+          // Typed into the terminal you already have open, which is the only place these commands
+          // mean anything -- so the panel closes first rather than typing behind itself.
+          onRun={(command) => {
+            setSettingsOpen(false);
+            setView('terminal');
+            setTimeout(() => typeInto(activeSession, command), 30);
+          }}
+        />
+      )}
       {adminOpen && <Admin onClose={() => setAdminOpen(false)} />}
       {newProjectOpen && <NewProjectModal onClose={() => setNewProjectOpen(false)} onCreate={handleCreate} />}
       {toolsOpen && activeProject && <ProjectTools project={activeProject} onClose={() => setToolsOpen(false)} />}

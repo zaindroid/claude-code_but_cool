@@ -148,17 +148,32 @@ export function deepcodeEnv(user) {
 // `python3 -c "from core.providers import registry"` lists exactly these. Every one of them wants
 // an API key -- none has an account login the way Claude Code does -- except the two local ones,
 // which want a running server instead.
+//
+// `defaultModel` is Codez's, not DeepCode's, and it exists because DeepCode has none. Its registry
+// carries a `default_api_base` per provider and no default model at all, so the model falls back
+// to one global default of `openai/gpt-4o-mini` whatever the provider is. Caught live: with
+// provider set to deepseek and no model named, DeepCode reported
+//
+//   Resolved workflow LLM: phase=implementation provider=deepseek model=openai/gpt-4o-mini
+//
+// which would have sent an OpenAI model name to DeepSeek's API and failed at request time, far
+// away from the setting that caused it. Naming a model with the provider is the fix.
+//
+// Only two are filled in, and that is deliberate: `deepseek/deepseek-chat` was run against the
+// real binary and resolved (and matches DeepSeek's own docs), and `openai/gpt-4o-mini` is
+// DeepCode's own default. The rest are blank rather than guessed -- a wrong model id here would
+// fail exactly like the bug above, so the settings page asks for one instead of inventing it.
 export const DEEPCODE_PROVIDERS = [
-  { id: 'openai', label: 'OpenAI', needsKey: true },
-  { id: 'anthropic', label: 'Anthropic', needsKey: true },
-  { id: 'deepseek', label: 'DeepSeek', needsKey: true },
-  { id: 'gemini', label: 'Google Gemini', needsKey: true },
-  { id: 'openrouter', label: 'OpenRouter', needsKey: true },
-  { id: 'zhipu', label: 'Zhipu', needsKey: true },
-  { id: 'dashscope', label: 'DashScope (Qwen)', needsKey: true },
-  { id: 'custom', label: 'Custom (OpenAI-compatible)', needsKey: true, needsBaseUrl: true },
-  { id: 'ollama', label: 'Ollama (local)', needsKey: false, needsBaseUrl: true },
-  { id: 'vllm', label: 'vLLM (local)', needsKey: false, needsBaseUrl: true },
+  { id: 'deepseek', label: 'DeepSeek', needsKey: true, defaultModel: 'deepseek/deepseek-chat' },
+  { id: 'openai', label: 'OpenAI', needsKey: true, defaultModel: 'openai/gpt-4o-mini' },
+  { id: 'anthropic', label: 'Anthropic', needsKey: true, defaultModel: '' },
+  { id: 'gemini', label: 'Google Gemini', needsKey: true, defaultModel: '' },
+  { id: 'openrouter', label: 'OpenRouter', needsKey: true, defaultModel: '' },
+  { id: 'zhipu', label: 'Zhipu', needsKey: true, defaultModel: '' },
+  { id: 'dashscope', label: 'DashScope (Qwen)', needsKey: true, defaultModel: '' },
+  { id: 'custom', label: 'Custom (OpenAI-compatible)', needsKey: true, needsBaseUrl: true, defaultModel: '' },
+  { id: 'ollama', label: 'Ollama (local)', needsKey: false, needsBaseUrl: true, defaultModel: '' },
+  { id: 'vllm', label: 'vLLM (local)', needsKey: false, needsBaseUrl: true, defaultModel: '' },
 ];
 
 // A few real, documented Anthropic-API-compatible providers, to fill the form in one click --

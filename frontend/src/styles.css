@@ -1483,22 +1483,6 @@ button { cursor: pointer; }
   to { opacity: 1; transform: none; }
 }
 
-/* ---------------------------------------------------------------- settings sections */
-/* A second credential on the same card needs a visible wall between it and the first. These two
-   keys do different things to different tools, and the cost of confusing them is real: the one
-   above becomes ANTHROPIC_AUTH_TOKEN and quietly takes Claude Code off a working subscription. */
-.settings-section {
-  margin-top: 6px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-.settings-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.settings-section-head h3 { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: -0.01em; }
-.settings-ready { font-size: 11px; color: var(--live); }
-.settings-notready { font-size: 11px; color: var(--text-faint); }
 .settings-field select {
   width: 100%;
   padding: 9px 11px;
@@ -1511,3 +1495,46 @@ button { cursor: pointer; }
 }
 .settings-field select:focus { border-color: var(--accent); outline: none; }
 .settings-field select option { background: var(--bg-elevated); color: var(--text); }
+
+/* One block per agent. The rule above each is the separation that stops two different tools'
+   credentials from reading as one form -- which is exactly what went wrong when DeepCode was
+   bolted under Claude Code's provider settings and the word "DeepSeek" ended up on the card
+   twice, meaning two different things. */
+.settings-tool { display: flex; flex-direction: column; gap: 12px; }
+.settings-tool + .settings-tool { padding-top: 18px; border-top: 1px solid var(--border); }
+.settings-tool-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.settings-tool-head h3 { margin: 0; font-size: 13.5px; font-weight: 650; letter-spacing: -0.01em; }
+/* What this agent would do if you ran it now, in its own terms. Green only when it would really
+   work -- "needs an API key" is not a warning, it is the next thing to do. */
+.settings-ready { font-size: 11.5px; color: var(--live); white-space: nowrap; }
+.settings-notready { font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
+
+/* Folded by default: for almost everyone the answer under here is "nothing". */
+.settings-disclose {
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 0;
+  cursor: pointer;
+}
+.settings-disclose:hover { color: var(--accent); }
+.settings-disclosed { display: flex; flex-direction: column; gap: 14px; }
+
+.settings-run {
+  align-self: flex-start;
+  padding: 7px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.settings-run:hover { border-color: var(--accent); color: var(--text); }
+.settings-run code { font-family: var(--font-mono); color: var(--text); }
+
+.settings-subhint { font-size: 11.5px; line-height: 1.5; color: var(--text-faint); font-weight: 400; }

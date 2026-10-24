@@ -1,17 +1,32 @@
 import { useEffect, useState } from 'react';
 import { getSettings, saveSettings, clearSecret } from '../api.js';
 
-// One provider config, applied to every project's terminal the next time it opens (see
-// backend/src/pty.js) -- Anthropic itself needs nothing here at all if you'd rather just run
-// `claude` in a terminal and sign in interactively; everything else is for an API key, or for
-// pointing at another Anthropic-API-compatible provider the same way its own docs describe
-// (https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/ is exactly this).
-export default function Settings({ onClose }) {
+// One settings screen, one section per agent Codez can run.
+//
+// It used to be organised by Codez's own history instead: a provider form for Claude Code, with
+// DeepCode's settings bolted underneath. That put the word "DeepSeek" on the card twice meaning
+// two different things -- once as a provider for *Claude Code* (its Anthropic-compatible
+// endpoint) and once as a provider for *DeepCode* -- next to two fields both labelled with the
+// word "key". Reported as confusing, correctly.
+//
+// So each agent is a block with its own name and its own status, and nothing from one agent's
+// section can be mistaken for another's. Claude Code's provider form is folded away behind a
+// disclosure, because its answer for almost everyone is "nothing, sign in in the terminal" -- and
+// folding it is what actually removes the duplicate word from the screen rather than relabelling
+// around it.
+//
+// Every agent is here, not only the ones with something to store. OpenCode and Codex keep their
+// credentials themselves, inside their own CLIs, so their section is one sentence and a button
+// that types their own login command into the open terminal. That is still worth a section: the
+// question "how do I sign in to this thing" has one place to be asked now, and an agent whose
+// answer is "not here" says so instead of being absent and leaving you looking.
+export default function Settings({ onClose, agents = [], loginCmd = {}, onRun }) {
   const [settings, setSettings] = useState(null);
   const [presets, setPresets] = useState(null);
   const [dcProviders, setDcProviders] = useState([]);
   const [dcReady, setDcReady] = useState(false);
   const [form, setForm] = useState(null);
+  const [showClaudeProvider, setShowClaudeProvider] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
@@ -22,6 +37,9 @@ export default function Settings({ onClose }) {
       setPresets(p);
       setDcProviders(deepcodeProviders || []);
       setDcReady(Boolean(deepcodeConfigured));
+      // Opened only if there is already something to see. Someone who has configured a provider
+      // should not have to go looking for the setting they made.
+      setShowClaudeProvider(s.provider !== 'anthropic' || s.hasAuthToken);
       setForm({
         provider: s.provider,
         baseUrl: s.baseUrl,
@@ -45,6 +63,21 @@ export default function Settings({ onClose }) {
   function applyPreset(id) {
     const p = presets[id];
     setForm((f) => ({ ...f, provider: id, baseUrl: p.baseUrl, model: p.model, smallModel: p.smallModel }));
+    setSaved(false);
+  }
+
+  // Picking a provider fills the model in with it. DeepCode has no per-provider default of its own
+  // -- it falls back to one global `openai/gpt-4o-mini` whatever you chose -- so an empty model box
+  // beside a non-OpenAI provider is a request that fails later, somewhere that does not mention
+  // this screen. Only replaces a value this list put there, never something typed by hand.
+  function pickDeepcodeProvider(id) {
+    const next = dcProviders.find((p) => p.id === id);
+    const prev = dcProviders.find((p) => p.id === form.deepcodeProvider);
+    setForm((f) => ({
+      ...f,
+      deepcodeProvider: id,
+      deepcodeModel: !f.deepcodeModel || f.deepcodeModel === prev?.defaultModel ? next?.defaultModel || '' : f.deepcodeModel,
+    }));
     setSaved(false);
   }
 
@@ -75,124 +108,137 @@ export default function Settings({ onClose }) {
 
   const isAnthropic = form.provider === 'anthropic';
   const dcSpec = dcProviders.find((p) => p.id === form.deepcodeProvider) || null;
+  // What each tool would do if you ran it right now, said in the tool's own terms rather than as
+  // a field-by-field report.
+  const claudeState = settings?.hasAuthToken
+    ? isAnthropic
+      ? 'using an API key'
+      : `using ${form.provider}`
+    : 'using your Claude sign-in';
+  const dcState = !dcSpec ? 'needs a provider' : settings?.hasDeepcodeKey || !dcSpec.needsKey ? 'ready' : 'needs an API key';
 
   return (
     <div className="overlay" onClick={onClose}>
       <div className="settings-card fade-in" onClick={(e) => e.stopPropagation()}>
         <div className="settings-head">
-          <h2>Provider</h2>
+          <h2>Settings</h2>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12" strokeLinecap="round" /></svg>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M18 6 6 18M6 6l12 12" strokeLinecap="round" />
+            </svg>
           </button>
         </div>
 
-        <div className="settings-presets">
-          {Object.entries(presets).map(([id, p]) => (
-            <button key={id} type="button" className={`preset-tile ${form.provider === id ? 'is-active' : ''}`} onClick={() => applyPreset(id)}>
-              {p.label}
-            </button>
-          ))}
-        </div>
-
         <form onSubmit={submit} className="settings-form">
-          {isAnthropic ? (
+          {/* ---------------------------------------------------------------- Claude Code */}
+          <section className="settings-tool">
+            <div className="settings-tool-head">
+              <h3>Claude Code</h3>
+              <span className={settings?.hasAuthToken ? 'settings-notready' : 'settings-ready'}>{claudeState}</span>
+            </div>
             <p className="settings-note">
-              No key needed to get started -- open a project's terminal, run <code>claude</code>, and sign in with your Claude
-              subscription. Only set a key below if you'd rather use API billing instead.
+              Nothing to set here. Open a terminal, run <code>claude</code>, and sign in with your Claude
+              subscription.
             </p>
-          ) : (
-            <label className="settings-field">
-              <span>Base URL</span>
-              <input
-                type="text"
-                placeholder="https://api.example.com/anthropic"
-                value={form.baseUrl}
-                onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
-              />
-            </label>
-          )}
+            <button
+              type="button"
+              className="settings-disclose"
+              aria-expanded={showClaudeProvider}
+              onClick={() => setShowClaudeProvider((v) => !v)}
+            >
+              {showClaudeProvider ? '▾' : '▸'} Use an API key or a different provider
+            </button>
 
-          <label className="settings-field">
-            <span>{isAnthropic ? 'API key' : 'API key / auth token'}</span>
-            <input
-              type="password"
-              placeholder={settings?.hasAuthToken ? '•••••••••••• (saved -- type to replace)' : 'sk-...'}
-              value={form.authToken}
-              onChange={(e) => setForm({ ...form, authToken: e.target.value })}
-              autoComplete="new-password"
-            />
-            {settings?.hasAuthToken && (
-              <button type="button" className="settings-clear" onClick={() => clear('authToken')}>Clear saved key</button>
+            {showClaudeProvider && (
+              <div className="settings-disclosed">
+                <div className="settings-presets">
+                  {Object.entries(presets).map(([id, p]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      className={`preset-tile ${form.provider === id ? 'is-active' : ''}`}
+                      onClick={() => applyPreset(id)}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+
+                {!isAnthropic && (
+                  <label className="settings-field">
+                    <span>Base URL</span>
+                    <input
+                      type="text"
+                      placeholder="https://api.example.com/anthropic"
+                      value={form.baseUrl}
+                      onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
+                    />
+                  </label>
+                )}
+
+                <label className="settings-field">
+                  <span>Claude Code API key</span>
+                  <input
+                    type="password"
+                    placeholder={settings?.hasAuthToken ? '•••••••••••• (saved — type to replace)' : 'sk-...'}
+                    value={form.authToken}
+                    onChange={(e) => setForm({ ...form, authToken: e.target.value })}
+                    autoComplete="new-password"
+                  />
+                  {settings?.hasAuthToken && (
+                    <button type="button" className="settings-clear" onClick={() => clear('authToken')}>
+                      Clear it and go back to the subscription sign-in
+                    </button>
+                  )}
+                </label>
+
+                <div className="settings-row">
+                  <label className="settings-field">
+                    <span>Model</span>
+                    <input
+                      type="text"
+                      placeholder="default"
+                      value={form.model}
+                      onChange={(e) => setForm({ ...form, model: e.target.value })}
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>Fast model</span>
+                    <input
+                      type="text"
+                      placeholder="default"
+                      value={form.smallModel}
+                      onChange={(e) => setForm({ ...form, smallModel: e.target.value })}
+                    />
+                  </label>
+                </div>
+              </div>
             )}
-          </label>
+          </section>
 
-          <div className="settings-row">
-            <label className="settings-field">
-              <span>Model</span>
-              <input type="text" placeholder="default" value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} />
-            </label>
-            <label className="settings-field">
-              <span>Fast model</span>
-              <input type="text" placeholder="default" value={form.smallModel} onChange={(e) => setForm({ ...form, smallModel: e.target.value })} />
-            </label>
-          </div>
-
-          {/* DeepCode's own credential, kept well away from the field above. That one becomes
-              ANTHROPIC_AUTH_TOKEN, and setting it takes Claude Code off a subscription login it is
-              already using -- which is how an account with an active Max plan came to be told it
-              was out of credit. Two tools, two keys, no shared slot. */}
+          {/* ---------------------------------------------------------------- DeepCode */}
           {dcProviders.length > 0 && (
-            <div className="settings-section">
-              <div className="settings-section-head">
+            <section className="settings-tool">
+              <div className="settings-tool-head">
                 <h3>DeepCode</h3>
-                <span className={dcReady ? 'settings-ready' : 'settings-notready'}>
-                  {dcReady ? 'configured' : 'not configured'}
-                </span>
+                <span className={dcState === 'ready' ? 'settings-ready' : 'settings-notready'}>{dcState}</span>
               </div>
               <p className="settings-note">
-                DeepCode has no account login — it reads an API key, and every provider it supports needs one.
-                Its key is kept apart from the one above, so setting it here cannot take Claude Code off your
-                subscription. Codez writes DeepCode's own config file; the key itself stays out of that file and
-                is handed to the shell as <code>DEEPCODE_API_KEY</code>.
+                DeepCode has no sign-in — it only reads an API key. This one is kept separate from Claude Code's
+                above, so setting it cannot affect your Claude subscription.
               </p>
 
-              <div className="settings-row">
-                <label className="settings-field">
-                  <span>Provider</span>
-                  <select
-                    value={form.deepcodeProvider}
-                    onChange={(e) => setForm({ ...form, deepcodeProvider: e.target.value })}
-                  >
-                    <option value="">Not set</option>
-                    {dcProviders.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="settings-field">
-                  <span>Model</span>
-                  <input
-                    type="text"
-                    placeholder="DeepCode's default"
-                    value={form.deepcodeModel}
-                    onChange={(e) => setForm({ ...form, deepcodeModel: e.target.value })}
-                  />
-                </label>
-              </div>
-
-              {dcSpec?.needsBaseUrl && (
-                <label className="settings-field">
-                  <span>{dcSpec.needsKey ? 'Base URL' : 'Server address'}</span>
-                  <input
-                    type="text"
-                    placeholder="http://127.0.0.1:11434"
-                    value={form.deepcodeBaseUrl}
-                    onChange={(e) => setForm({ ...form, deepcodeBaseUrl: e.target.value })}
-                  />
-                </label>
-              )}
+              <label className="settings-field">
+                <span>Provider</span>
+                <select value={form.deepcodeProvider} onChange={(e) => pickDeepcodeProvider(e.target.value)}>
+                  <option value="">Choose one</option>
+                  {dcProviders.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
               {dcSpec?.needsKey && (
                 <label className="settings-field">
@@ -211,14 +257,72 @@ export default function Settings({ onClose }) {
                   )}
                 </label>
               )}
-            </div>
+
+              {dcSpec?.needsBaseUrl && (
+                <label className="settings-field">
+                  <span>{dcSpec.needsKey ? 'Base URL' : 'Server address'}</span>
+                  <input
+                    type="text"
+                    placeholder="http://127.0.0.1:11434/v1"
+                    value={form.deepcodeBaseUrl}
+                    onChange={(e) => setForm({ ...form, deepcodeBaseUrl: e.target.value })}
+                  />
+                </label>
+              )}
+
+              {dcSpec && (
+                <label className="settings-field">
+                  <span>Model</span>
+                  <input
+                    type="text"
+                    placeholder="provider/model"
+                    value={form.deepcodeModel}
+                    onChange={(e) => setForm({ ...form, deepcodeModel: e.target.value })}
+                  />
+                  {/* Said plainly because the failure it prevents is invisible: DeepCode's own
+                      fallback is an OpenAI model name whatever provider you picked, so a blank
+                      box here fails on the first request, nowhere near this screen. */}
+                  <span className="settings-subhint">
+                    {dcSpec.defaultModel
+                      ? `Filled in for ${dcSpec.label}. Change it if you want a different one.`
+                      : `Required — DeepCode has no default for ${dcSpec.label}, and its fallback is an OpenAI model that this provider will reject.`}
+                  </span>
+                </label>
+              )}
+            </section>
           )}
 
-          <p className="settings-hint">Applies to terminals opened after saving -- one already running keeps its current environment.</p>
+          {/* The agents that hold their own credentials. Nothing to store here, so nothing is
+              stored -- just the command each one documents, and a way to run it where it works. */}
+          {['opencode', 'codex'].map((id) => {
+            const a = agents.find((x) => x.id === id);
+            if (!a?.available) return null;
+            return (
+              <section className="settings-tool" key={id}>
+                <div className="settings-tool-head">
+                  <h3>{a.label}</h3>
+                  <span className="settings-notready">signs in in its own terminal</span>
+                </div>
+                <p className="settings-note">{a.loginHint}</p>
+                {loginCmd[id] && (
+                  <button type="button" className="settings-run" onClick={() => onRun?.(loginCmd[id])}>
+                    Run <code>{loginCmd[id]}</code> in the open terminal
+                  </button>
+                )}
+              </section>
+            );
+          })}
+
+          <p className="settings-hint">
+            Applies to terminals opened after saving — an agent already running keeps its current environment, so
+            stop and resume it.
+          </p>
 
           {error && <div className="settings-error">{error}</div>}
           <div className="settings-actions">
-            <button type="submit" disabled={saving}>{saving ? 'Saving…' : saved ? 'Saved' : 'Save'}</button>
+            <button type="submit" disabled={saving}>
+              {saving ? 'Saving…' : saved ? 'Saved' : 'Save'}
+            </button>
           </div>
         </form>
       </div>
