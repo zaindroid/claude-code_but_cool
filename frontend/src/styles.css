@@ -653,7 +653,11 @@ button { cursor: pointer; }
 .settings-note { margin: 0; font-size: 13px; line-height: 1.55; color: var(--text-muted); background: var(--panel); border-radius: var(--radius-sm); padding: 12px 14px; }
 .settings-note code { font-family: var(--font-mono); background: var(--panel-hover); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 
-.settings-field { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+/* `min-width: 0` is the load-bearing half. A flex item's default minimum is its content's
+   intrinsic width, and a <select> is as wide as its longest option -- "Custom (OpenAI-compatible)"
+   was enough to push the row past the card and put a horizontal scrollbar under the whole dialog,
+   with the field beside it cut off. */
+.settings-field { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
 .settings-field span { font-size: 12px; font-weight: 600; color: var(--text-muted); }
 .settings-field input {
   padding: 9px 11px;
@@ -1496,6 +1500,7 @@ button { cursor: pointer; }
 .settings-ready { font-size: 11px; color: var(--live); }
 .settings-notready { font-size: 11px; color: var(--text-faint); }
 .settings-field select {
+  width: 100%;
   padding: 9px 11px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);

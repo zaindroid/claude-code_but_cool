@@ -66,8 +66,12 @@ export const AGENTS = {
     // `deepcode_config.json.example` to copy from. Codez writes the config itself now, from the
     // account's settings, which is also the only way the provider key gets in. See deepcode.js.
     launch: () => 'deepcode',
-    loginCmd: 'deepcode provider set',
-    loginHint: 'DeepCode has no account login — it reads a provider API key set with its own `deepcode provider set` command.',
+    // No login command, because there is none. This said `deepcode provider set` for a long
+    // time, and the palette offered it as "Sign in to deepcode" -- run live, DeepCode answers
+    // `Unknown option: provider`. Its key goes in a config file, which Codez now writes from the
+    // account's settings (deepcode.js), so the real path is the settings page, not a command.
+    loginCmd: null,
+    loginHint: 'DeepCode has no account login and no sign-in command. Set its provider and API key in Codez’s own provider settings — Codez writes DeepCode’s config file from them.',
     resumeCmd: null, // DeepCode's resume is an in-session `/resume`, not a launch flag.
     continueCmd: null,
     inSessionResumeHint: 'Type /resume once inside a DeepCode session to pick up an earlier one.',

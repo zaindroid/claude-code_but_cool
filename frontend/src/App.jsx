@@ -32,7 +32,13 @@ import {
 
 // The agents' own real login commands, same values as backend/src/agents.js. Codez implements auth
 // for none of them -- this types the tool's own command into the tool's own terminal.
-const LOGIN_CMD = { claude: 'claude', opencode: 'opencode auth login', codex: 'codex', deepcode: 'deepcode provider set' };
+//
+// DeepCode is absent, and that absence is the correction. It was listed here as
+// `deepcode provider set` and offered in the palette as "Sign in to deepcode"; run live, DeepCode
+// answers `Unknown option: provider`. There is no sign-in command because there is no account --
+// its key lives in a config file, which Codez writes from provider settings. So that is where the
+// palette sends you instead, below.
+const LOGIN_CMD = { claude: 'claude', opencode: 'opencode auth login', codex: 'codex' };
 
 function formatTokens(n) {
   if (!n) return '0';
@@ -538,6 +544,15 @@ export default function App() {
         hint: LOGIN_CMD[signInTo],
         keywords: 'auth login api key account',
         run: () => typeInto(activeSession, LOGIN_CMD[signInTo]),
+      });
+    // DeepCode's equivalent, which is a settings page rather than a command.
+    if (signInTo === 'deepcode')
+      list.push({
+        id: 'deepcode-key',
+        label: 'Set up DeepCode',
+        hint: 'it needs an API key — no account login exists',
+        keywords: 'auth login api key account deepcode provider',
+        run: () => setSettingsOpen(true),
       });
 
     if (activeProject) list.push({ id: 'tools', label: 'MCP, skills, lessons, templates', keywords: 'config extend', run: () => setToolsOpen(true) });
