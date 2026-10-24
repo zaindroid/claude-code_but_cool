@@ -330,7 +330,17 @@ button { cursor: pointer; }
 /* The screen: the one object on the page with real depth. Dark in both themes, because it is a
    display inset into a console rather than a panel of the page -- which is also why the inset
    highlight sits on top and the shadow sits inside. */
-.stage { position: relative; min-height: 0; padding: 0 16px 10px; display: grid; grid-template-rows: 1fr auto; gap: 8px; }
+/* `flex: 1` is load-bearing: the shell is a flex column, and without it the stage would size to
+   its content and the screen's 1fr row would collapse to nothing. */
+.stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 16px 10px;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  gap: 8px;
+}
 
 .screen {
   position: relative;
